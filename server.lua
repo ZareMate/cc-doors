@@ -6,8 +6,8 @@ local LOG_FILE = "/disk/log"
 local SHA256_FILE = "/sha256"
 
 local urls = {
-  {"startup.lua", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/door.lua"},
-  {"sha256.lua", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/sha256.lua"},
+  {"startup", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/door.lua"},
+  {"sha256", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/sha256.lua"},
 }
 
 local LISTENER_ARG = "listener"

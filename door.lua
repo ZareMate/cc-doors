@@ -11,8 +11,8 @@ local MENU_TIMEOUT = 60
 local MAIN_TIMEOUT = 60
 
 local urls = {
-  {"startup.lua", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/door.lua"},
-  {"sha256.lua", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/sha256.lua"},
+  {"startup", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/door.lua"},
+  {"sha256", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/sha256.lua"},
 }
 
 local exit = false
