@@ -1,11 +1,15 @@
-local VERSION = "v2.3"
+local VERSION = "v2.4"
 
 local USERS_FILE = "/disk/users"
 local USER_STATES_FILE = "/disk/user_states"
 local LOG_FILE = "/disk/log"
 local SHA256_FILE = "/sha256"
 
-local UPDATE_ID = "nqxkYxU9"
+local urls = {
+  {"startup.lua", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/door.lua"},
+  {"sha256.lua", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/sha256.lua"},
+}
+
 local LISTENER_ARG = "listener"
 
 local SERVER_ID = os.getComputerID()
@@ -1232,56 +1236,33 @@ end
 -- Update server
 --------------------------------------------------
 
+function download(name, url)
+  print("Updating " .. name)
+
+  local request = http.get(url)
+  local data = request.readAll()
+  request.close()
+
+  if fs.exists(name) then
+    fs.delete(name)
+  end
+
+  local file = fs.open(name, "w")
+  file.write(data)
+  file.close()
+
+  print("Successfully downloaded " .. name .. "\n")
+end
+
 local function updateServer()
     clear()
 
-    print("Update Server")
-    print("-------------")
-    print("     " .. VERSION)
-    print("")
-    print("Downloading latest startup...")
-    print("")
-
-    local tempFile = "/startup.new"
-
-    if fs.exists(tempFile) then
-        fs.delete(tempFile)
+    for _, value in ipairs(urls) do
+        download(unpack(value))
     end
-
-    local result = shell.run(
-        "pastebin",
-        "get",
-        UPDATE_ID,
-        tempFile
-    )
-
-    if not result
-        or not fs.exists(tempFile) then
-
-        print("")
-        print("Update failed.")
-
-        if fs.exists(tempFile) then
-            fs.delete(tempFile)
-        end
-
-        sleep(2)
-
-        return
-    end
-
-    if fs.exists("/startup") then
-        fs.delete("/startup")
-    end
-
-    fs.move(
-        tempFile,
-        "/startup"
-    )
 
     logMessage(
-        "Server updated from Pastebin " ..
-        UPDATE_ID
+        "Server updated server"
     )
 
     print("")

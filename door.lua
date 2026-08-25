@@ -1,4 +1,4 @@
-local VERSION = "v2.1"
+local VERSION = "v2.4"
 
 local SERVER_ID = 214
 
@@ -10,7 +10,10 @@ local SERVER_TIMEOUT = 10
 local MENU_TIMEOUT = 60
 local MAIN_TIMEOUT = 60
 
-local UPDATE_ID = "P8ydCtxd"
+local urls = {
+  {"startup.lua", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/door.lua"},
+  {"sha256.lua", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/sha256.lua"},
+}
 
 local exit = false
 
@@ -386,47 +389,30 @@ end
 -- Update
 --------------------------------------------------
 
+function download(name, url)
+  print("Updating " .. name)
+
+  local request = http.get(url)
+  local data = request.readAll()
+  request.close()
+
+  if fs.exists(name) then
+    fs.delete(name)
+  end
+
+  local file = fs.open(name, "w")
+  file.write(data)
+  file.close()
+
+  print("Successfully downloaded " .. name .. "\n")
+end
+
 local function update()
     clear()
 
-    print("Update")
-    print("------")
-    print("     " .. VERSION)
-    print("")
-    print("Downloading latest startup...")
-    print("")
-
-    local tempFile = "/startup.new"
-
-    if fs.exists(tempFile) then
-        fs.delete(tempFile)
+    for _, value in ipairs(urls) do
+        download(unpack(value))
     end
-
-    local result = shell.run(
-        "pastebin",
-        "get",
-        UPDATE_ID,
-        tempFile
-    )
-
-    if not result or not fs.exists(tempFile) then
-        print("")
-        print("Update failed.")
-
-        if fs.exists(tempFile) then
-            fs.delete(tempFile)
-        end
-
-        sleep(2)
-
-        return
-    end
-
-    if fs.exists("/startup") then
-        fs.delete("/startup")
-    end
-
-    fs.move(tempFile, "/startup")
 
     print("")
     print("Update successful.")
