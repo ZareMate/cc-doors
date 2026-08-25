@@ -1,12 +1,12 @@
 local VERSION = "v2.4"
 
-local USERS_FILE = "/disk/users"
-local USER_STATES_FILE = "/disk/user_states"
-local LOG_FILE = "/disk/log"
+local USERS_FILE = "/disk2/users"
+local USER_STATES_FILE = "/disk2/user_states"
+local LOG_FILE = "/disk2/log"
 local SHA256_FILE = "/sha256"
 
 local urls = {
-  {"startup", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/door.lua"},
+  {"startup", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/server.lua"},
   {"sha256", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/sha256.lua"},
 }
 
