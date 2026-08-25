@@ -1238,19 +1238,21 @@ end
 
 function download(name, url)
   print("Updating " .. name)
-
-  local request = http.get(url)
-  local data = request.readAll()
-  request.close()
-
+ 
+  request = http.get(url)
+  data = request.readAll()
+ 
   if fs.exists(name) then
     fs.delete(name)
+    file = fs.open(name, "w")
+    file.write(data)
+    file.close()
+  else
+    file = fs.open(name, "w")
+    file.write(data)
+    file.close()
   end
-
-  local file = fs.open(name, "w")
-  file.write(data)
-  file.close()
-
+ 
   print("Successfully downloaded " .. name .. "\n")
 end
 
