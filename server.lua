@@ -1,8 +1,8 @@
 local VERSION = "v2.4"
 
-local USERS_FILE = "/disk2/users"
-local USER_STATES_FILE = "/disk2/user_states"
-local LOG_FILE = "/disk2/log"
+local USERS_FILE = "/disk/users"
+local USER_STATES_FILE = "/disk/user_states"
+local LOG_FILE = "/disk/log"
 local SHA256_FILE = "/sha256"
 
 local urls = {
