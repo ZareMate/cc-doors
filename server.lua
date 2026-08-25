@@ -1,4 +1,4 @@
-local VERSION = "v2.4"
+local VERSION = "v2.5"
 
 local USERS_FILE = "/disk/users"
 local USER_STATES_FILE = "/disk/user_states"
@@ -8,6 +8,7 @@ local SHA256_FILE = "/sha256"
 local urls = {
   {"startup", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/server.lua"},
   {"sha256", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/sha256.lua"},
+  {"updater", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/updater.lua"},
 }
 
 local LISTENER_ARG = "listener"

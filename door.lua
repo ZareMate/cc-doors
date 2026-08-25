@@ -1,4 +1,4 @@
-local VERSION = "v2.4"
+local VERSION = "v2.5"
 
 local SERVER_ID = 214
 
@@ -13,6 +13,7 @@ local MAIN_TIMEOUT = 60
 local urls = {
   {"startup", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/door.lua"},
   {"sha256", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/sha256.lua"},
+  {"updater", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/updater.lua"},
 }
 
 local exit = false
