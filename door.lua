@@ -1,4 +1,4 @@
-local VERSION = "v2.6"
+local VERSION = "v2.7"
 
 local SERVER_ID = 214
 
@@ -18,6 +18,10 @@ local urls = {
 
 local exit = false
 local DRIVE_SIDE = "top"
+
+-- normal = 2.5s, disk = +2s => 4.5s
+local OPEN_TIME_PASSWORD = 2.5
+local OPEN_TIME_DISK = 4.5
 
 --------------------------------------------------
 -- UI
@@ -596,17 +600,29 @@ local function adminMenu()
 end
 
 --------------------------------------------------
+-- Door helpers
+--------------------------------------------------
+
+local function openDoor(durationSeconds)
+    redstone.setOutput(DOOR_SIDE, true)
+    sleep(durationSeconds)
+    redstone.setOutput(DOOR_SIDE, false)
+end
+
+--------------------------------------------------
 -- Door authentication
 --------------------------------------------------
 
 local function authenticateDoor(password)
     local hash = sha256(password)
 
+    -- Password-only auth no longer allowed on server (requires disk_id_hash)
     rednet.send(
         SERVER_ID,
         {
             type = "auth",
-            hash = hash
+            hash = hash,
+            disk_id_hash = ""
         },
         "door_auth"
     )
@@ -638,17 +654,7 @@ local function authenticateDoor(password)
         print("")
         print("Access granted!")
 
-        redstone.setOutput(
-            DOOR_SIDE,
-            true
-        )
-
-        sleep(2.5)
-
-        redstone.setOutput(
-            DOOR_SIDE,
-            false
-        )
+        openDoor(OPEN_TIME_PASSWORD)
 
         print("")
         print("Door closed.")
@@ -665,12 +671,13 @@ local function authenticateDoor(password)
     end
 end
 
-local function authenticateDoorHash(hash)
+local function authenticateDoorHash(userHash, diskIdHash)
     rednet.send(
         SERVER_ID,
         {
             type = "auth",
-            hash = hash
+            hash = userHash,
+            disk_id_hash = diskIdHash
         },
         "door_auth"
     )
@@ -700,9 +707,8 @@ local function authenticateDoorHash(hash)
         print("")
         print("Access granted!")
 
-        redstone.setOutput(DOOR_SIDE, true)
-        sleep(2.5)
-        redstone.setOutput(DOOR_SIDE, false)
+        -- Disk access gets +2s
+        openDoor(OPEN_TIME_DISK)
 
         print("")
         print("Door closed.")
@@ -731,32 +737,40 @@ local function diskAccessListener()
             local mountPath = disk.getMountPath(DRIVE_SIDE)
             local label = disk.getLabel(DRIVE_SIDE)
 
-            -- Accept "Access" or "Access - anything"
             local validLabel = type(label) == "string"
                 and (label == "Access" or label:match("^Access%s*%-%s*.+$"))
 
             if mountPath and validLabel then
                 local hashPath = fs.combine(mountPath, "hash")
+                local idPath = fs.combine(mountPath, "disk_id")
 
-                if fs.exists(hashPath) then
-                    local f = fs.open(hashPath, "r")
-                    if f then
-                        local hash = f.readAll()
-                        f.close()
+                if fs.exists(hashPath) and fs.exists(idPath) then
+                    local fHash = fs.open(hashPath, "r")
+                    local fId = fs.open(idPath, "r")
 
-                        if type(hash) == "string" then
-                            hash = hash:gsub("^%s+", ""):gsub("%s+$", "")
-                            if hash ~= "" then
+                    if fHash and fId then
+                        local userHash = fHash.readAll()
+                        local rawDiskId = fId.readAll()
+
+                        fHash.close()
+                        fId.close()
+
+                        if type(userHash) == "string" and type(rawDiskId) == "string" then
+                            userHash = userHash:gsub("^%s+", ""):gsub("%s+$", "")
+                            rawDiskId = rawDiskId:gsub("^%s+", ""):gsub("%s+$", "")
+
+                            if userHash ~= "" and rawDiskId ~= "" then
+                                local diskIdHash = sha256(rawDiskId)
+
                                 -- Always eject
                                 disk.eject(DRIVE_SIDE)
-                                authenticateDoorHash(hash)
+
+                                authenticateDoorHash(userHash, diskIdHash)
                             end
                         end
                     end
                 end
             end
-
-            
         end
     end
 end

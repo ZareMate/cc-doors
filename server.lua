@@ -1,7 +1,8 @@
-local VERSION = "v2.6"
+local VERSION = "v2.7"
 
 local USERS_FILE = "/disk/users"
 local USER_STATES_FILE = "/disk/user_states"
+local USER_DISKS_FILE = "/disk/user_disks"
 local LOG_FILE = "/disk/log"
 local SHA256_FILE = "/sha256"
 
@@ -38,12 +39,75 @@ local VALID_USER_STATES = {
 local sha256 = dofile(SHA256_FILE)
 
 --------------------------------------------------
+-- Disk states
+--------------------------------------------------
+
+local DISK_STATE_ACTIVE = "active"
+local DISK_STATE_REVOKED = "revoked"
+
+local VALID_DISK_STATES = {
+    [DISK_STATE_ACTIVE] = true,
+    [DISK_STATE_REVOKED] = true
+}
+
+--------------------------------------------------
 -- Reserved password
 --------------------------------------------------
 
 local function isReservedPassword(password)
     return type(password) == "string"
         and password:lower() == RESERVED_PASSWORD
+end
+
+--------------------------------------------------
+-- Utility
+--------------------------------------------------
+
+local function trim(s)
+    if type(s) ~= "string" then
+        return ""
+    end
+
+    return s:gsub("^%s+", ""):gsub("%s+$", "")
+end
+
+local function nowString()
+    return os.date("%Y-%m-%d %H:%M:%S")
+end
+
+local function randomHex(len)
+    local chars = "0123456789abcdef"
+    local out = {}
+
+    for i = 1, len do
+        local idx = math.random(1, #chars)
+        out[i] = chars:sub(idx, idx)
+    end
+
+    return table.concat(out)
+end
+
+local function makeRawDiskId(username)
+    local seed = tostring(SERVER_ID)
+        .. "|"
+        .. tostring(os.epoch and os.epoch("utc") or os.time())
+        .. "|"
+        .. tostring(math.random(100000, 999999))
+        .. "|"
+        .. tostring(username or "")
+        .. "|"
+        .. randomHex(16)
+
+    -- raw ID written to disk
+    return sha256(seed) .. randomHex(16)
+end
+
+local function ensureTable(value)
+    if type(value) == "table" then
+        return value
+    end
+
+    return {}
 end
 
 --------------------------------------------------
@@ -115,10 +179,7 @@ local function loadUserStates()
     for username, state in pairs(loaded) do
         if type(username) ~= "string"
             or not VALID_USER_STATES[state] then
-            error(
-                "Invalid user state for " ..
-                tostring(username)
-            )
+            error("Invalid user state for " .. tostring(username))
         end
     end
 
@@ -136,15 +197,75 @@ local function saveUserStates(states)
     file.close()
 end
 
+local function loadUserDisks()
+    if not fs.exists(USER_DISKS_FILE) then
+        return {}
+    end
+
+    local file = fs.open(USER_DISKS_FILE, "r")
+    if not file then
+        return {}
+    end
+
+    local data = file.readAll()
+    file.close()
+
+    if data == "" then
+        return {}
+    end
+
+    local loaded = textutils.unserialize(data)
+    if type(loaded) ~= "table" then
+        error("Invalid user disks file")
+    end
+
+    -- normalize
+    for username, disks in pairs(loaded) do
+        if type(username) ~= "string" then
+            loaded[username] = nil
+        else
+            loaded[username] = ensureTable(disks)
+
+            for i = #loaded[username], 1, -1 do
+                local d = loaded[username][i]
+
+                if type(d) ~= "table" then
+                    table.remove(loaded[username], i)
+                else
+                    d.idHash = trim(d.idHash or "")
+                    d.label = trim(d.label or "")
+                    d.createdAt = trim(d.createdAt or "")
+                    d.state = trim(d.state or "")
+
+                    if d.idHash == "" or not VALID_DISK_STATES[d.state] then
+                        table.remove(loaded[username], i)
+                    end
+                end
+            end
+        end
+    end
+
+    return loaded
+end
+
+local function saveUserDisks(userDisks)
+    local file = fs.open(USER_DISKS_FILE, "w")
+
+    if not file then
+        error("Could not open " .. USER_DISKS_FILE)
+    end
+
+    file.write(textutils.serialize(userDisks))
+    file.close()
+end
+
 local function logMessage(message)
-    local date = os.date("%Y-%m-%d %H:%M:%S")
+    local date = nowString()
 
     local file = fs.open(LOG_FILE, "a")
 
     if file then
-        file.writeLine(
-            "[" .. date .. "] " .. message
-        )
+        file.writeLine("[" .. date .. "] " .. message)
         file.close()
     end
 
@@ -164,7 +285,7 @@ local function loadAuthDiskDrivePath()
     local path = file.readAll() or ""
     file.close()
 
-    path = path:gsub("^%s+", ""):gsub("%s+$", "")
+    path = trim(path)
 
     if path == "" then
         return DEFAULT_AUTH_DISK_DRIVE_PATH
@@ -185,7 +306,7 @@ local function saveAuthDiskDrivePath(path)
 end
 
 --------------------------------------------------
--- Synchronize users and user states
+-- Synchronize users, states, disks
 --------------------------------------------------
 
 local function syncUserStates()
@@ -197,8 +318,14 @@ local function syncUserStates()
         if userStates[username] == nil then
             userStates[username] = USER_STATE_INACTIVE
             changed = true
-
             logMessage("User state initialized: " .. username .. " -> inactive")
+        end
+    end
+
+    for username in pairs(userStates) do
+        if users[username] == nil then
+            userStates[username] = nil
+            changed = true
         end
     end
 
@@ -207,6 +334,32 @@ local function syncUserStates()
     end
 
     return userStates
+end
+
+local function syncUserDisks()
+    local users = loadUsers()
+    local userDisks = loadUserDisks()
+    local changed = false
+
+    for username in pairs(users) do
+        if type(userDisks[username]) ~= "table" then
+            userDisks[username] = {}
+            changed = true
+        end
+    end
+
+    for username in pairs(userDisks) do
+        if users[username] == nil then
+            userDisks[username] = nil
+            changed = true
+        end
+    end
+
+    if changed then
+        saveUserDisks(userDisks)
+    end
+
+    return userDisks
 end
 
 --------------------------------------------------
@@ -230,6 +383,106 @@ end
 
 local function isUserAdmin(userStates, username)
     return getUserState(userStates, username) == USER_STATE_ADMIN
+end
+
+--------------------------------------------------
+-- Disk helpers
+--------------------------------------------------
+
+local function getUserDiskList(userDisks, username)
+    local list = userDisks[username]
+
+    if type(list) ~= "table" then
+        return {}
+    end
+
+    return list
+end
+
+local function findDiskIndexByHash(userDisks, username, idHash)
+    local list = getUserDiskList(userDisks, username)
+
+    for i, d in ipairs(list) do
+        if d.idHash == idHash then
+            return i
+        end
+    end
+
+    return nil
+end
+
+local function addDiskRecord(username, idHash, label)
+    local userDisks = syncUserDisks()
+
+    if type(userDisks[username]) ~= "table" then
+        userDisks[username] = {}
+    end
+
+    table.insert(userDisks[username], {
+        idHash = idHash,
+        label = label or ("Access - " .. username),
+        createdAt = nowString(),
+        state = DISK_STATE_ACTIVE
+    })
+
+    saveUserDisks(userDisks)
+end
+
+local function setDiskState(username, idHash, state)
+    if not VALID_DISK_STATES[state] then
+        return false
+    end
+
+    local userDisks = syncUserDisks()
+    local idx = findDiskIndexByHash(userDisks, username, idHash)
+
+    if not idx then
+        return false
+    end
+
+    userDisks[username][idx].state = state
+    saveUserDisks(userDisks)
+
+    return true
+end
+
+local function removeDiskRecord(username, idHash)
+    local userDisks = syncUserDisks()
+    local idx = findDiskIndexByHash(userDisks, username, idHash)
+
+    if not idx then
+        return false
+    end
+
+    table.remove(userDisks[username], idx)
+    saveUserDisks(userDisks)
+
+    return true
+end
+
+local function isDiskAuthorizedForUser(username, diskIdHash)
+    local userDisks = syncUserDisks()
+    local list = getUserDiskList(userDisks, username)
+
+    for _, d in ipairs(list) do
+        if d.idHash == diskIdHash and d.state == DISK_STATE_ACTIVE then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function shortHash(h)
+    if type(h) ~= "string" then
+        return ""
+    end
+
+    if #h <= 16 then
+        return h
+    end
+
+    return h:sub(1, 8) .. "..." .. h:sub(-8)
 end
 
 --------------------------------------------------
@@ -337,8 +590,6 @@ local function getAuthDiskInfo()
         return nil, "Auth drive path not found: " .. authDrivePath
     end
 
-    -- With FS-only approach, the path itself is the mount path.
-    -- Example: /disk2
     return {
         mountPath = authDrivePath,
         drivePath = authDrivePath
@@ -350,8 +601,8 @@ local function writeAuthDiskForUser(username)
     local userHash = users[username]
 
     clear()
-    print("Make Auth Disk")
-    print("--------------")
+    print("Add Disk")
+    print("--------")
     print("")
     print("User: " .. username)
     print("")
@@ -380,29 +631,45 @@ local function writeAuthDiskForUser(username)
         return
     end
 
-    local hashPath = fs.combine(info.mountPath, "hash")
-    local file = fs.open(hashPath, "w")
+    local rawDiskId = makeRawDiskId(username)
+    local diskIdHash = sha256(rawDiskId)
 
-    if not file then
+    local hashPath = fs.combine(info.mountPath, "hash")
+    local idPath = fs.combine(info.mountPath, "disk_id")
+
+    local fHash = fs.open(hashPath, "w")
+    if not fHash then
         print("Failed to write hash file.")
         sleep(2)
         return
     end
+    fHash.write(userHash)
+    fHash.close()
 
-    file.write(userHash)
-    file.close()
+    local fId = fs.open(idPath, "w")
+    if not fId then
+        print("Failed to write disk ID file.")
+        sleep(2)
+        return
+    end
+    fId.write(rawDiskId)
+    fId.close()
 
     local label = "Access - " .. username
     pcall(function()
         disk.setLabel("left", label)
     end)
 
+    addDiskRecord(username, diskIdHash, label)
+
     print("Auth disk written successfully.")
     print("Label: " .. label)
     print("Drive path: " .. info.drivePath)
-    print("Path: " .. hashPath)
+    print("Path hash: " .. hashPath)
+    print("Path id: " .. idPath)
+    print("Disk ID hash: " .. shortHash(diskIdHash))
 
-    logMessage("AUTH DISK CREATED - " .. username .. " on " .. info.mountPath)
+    logMessage("AUTH DISK CREATED - " .. username .. " id=" .. shortHash(diskIdHash) .. " on " .. info.mountPath)
 
     sleep(2)
 end
@@ -424,7 +691,7 @@ local function setAuthDrivePathMenu()
     write("New path: ")
 
     local input = read()
-    local newPath = input:gsub("^%s+", ""):gsub("%s+$", "")
+    local newPath = trim(input)
 
     if newPath == "" then
         newPath = DEFAULT_AUTH_DISK_DRIVE_PATH
@@ -461,20 +728,26 @@ local function handleDoorAuth(sender, message)
 
     if type(message) ~= "table"
         or message.type ~= "auth"
-        or type(message.hash) ~= "string" then
+        or type(message.hash) ~= "string"
+        or type(message.disk_id_hash) ~= "string" then
         rednet.send(sender, false, "door_auth")
         return
     end
 
-    local username = getUserByHash(users, message.hash)
+    local username = getUserByHash(users, trim(message.hash))
+    local diskIdHash = trim(message.disk_id_hash)
 
-    if username and isUserActive(userStates, username) then
+    if username
+        and isUserActive(userStates, username)
+        and isDiskAuthorizedForUser(username, diskIdHash) then
+
         rednet.send(sender, true, "door_auth")
-        logMessage("ACCESS GRANTED - " .. username .. " (" .. getUserState(userStates, username) .. ", Computer " .. sender .. ")")
+        logMessage("ACCESS GRANTED - " .. username .. " (" .. getUserState(userStates, username) .. ", disk=" .. shortHash(diskIdHash) .. ", Computer " .. sender .. ")")
     else
         rednet.send(sender, false, "door_auth")
+
         if username then
-            logMessage("ACCESS DENIED - " .. username .. " (" .. getUserState(userStates, username) .. ", Computer " .. sender .. ")")
+            logMessage("ACCESS DENIED - " .. username .. " (" .. getUserState(userStates, username) .. ", disk=" .. shortHash(diskIdHash) .. ", Computer " .. sender .. ")")
         else
             logMessage("ACCESS DENIED - Computer " .. sender)
         end
@@ -682,6 +955,7 @@ end
 local function removeSelectedUser(username)
     local users = loadUsers()
     local userStates = loadUserStates()
+    local userDisks = loadUserDisks()
 
     clear()
     print("Remove User")
@@ -700,9 +974,14 @@ local function removeSelectedUser(username)
         if key == keys.enter then
             users[username] = nil
             userStates[username] = nil
+            userDisks[username] = nil
+
             saveUsers(users)
             saveUserStates(userStates)
+            saveUserDisks(userDisks)
+
             logMessage("User removed: " .. username)
+
             print("")
             print("User removed.")
             sleep(2)
@@ -735,11 +1014,262 @@ local function getUserActionOptions(state)
         table.insert(options, "Admin")
     end
 
-    table.insert(options, "Make auth disk")
+    table.insert(options, "Disks")
     table.insert(options, "Remove")
     table.insert(options, "Change password")
 
     return options
+end
+
+local function listUserDisksScreen(username)
+    local userDisks = syncUserDisks()
+    local list = getUserDiskList(userDisks, username)
+
+    clear()
+    print("User Disks")
+    print("----------")
+    print("")
+    print("User: " .. username)
+    print("")
+
+    if #list == 0 then
+        print("No disks registered.")
+        print("")
+        print("Press any key...")
+        waitForKey()
+        return
+    end
+
+    for i, d in ipairs(list) do
+        local stateColor = colors.white
+        if d.state == DISK_STATE_ACTIVE then
+            stateColor = colors.green
+        elseif d.state == DISK_STATE_REVOKED then
+            stateColor = colors.red
+        end
+
+        term.setTextColor(colors.white)
+        print(i .. ". " .. (d.label or ("Access - " .. username)))
+
+        term.setTextColor(stateColor)
+        print("   State: " .. string.upper(d.state))
+        term.setTextColor(colors.white)
+
+        print("   ID: " .. shortHash(d.idHash))
+        print("   Created: " .. (d.createdAt or "unknown"))
+        print("")
+    end
+
+    print("Press any key...")
+    waitForKey()
+end
+
+local function chooseUserDisk(username, title, onlyState)
+    local selected = 1
+
+    while true do
+        local userDisks = syncUserDisks()
+        local all = getUserDiskList(userDisks, username)
+        local filtered = {}
+
+        for _, d in ipairs(all) do
+            if onlyState == nil or d.state == onlyState then
+                table.insert(filtered, d)
+            end
+        end
+
+        clear()
+        print(title)
+        print(string.rep("-", #title))
+        print("")
+        print("User: " .. username)
+        print("")
+
+        if #filtered == 0 then
+            print("No matching disks.")
+            print("")
+            print("A/left = Back")
+            local k = waitForKey()
+            if k == keys.a or k == keys.left or k == keys.enter then
+                return nil
+            end
+        else
+            if selected > #filtered then
+                selected = #filtered
+            end
+            if selected < 1 then
+                selected = 1
+            end
+
+            for i, d in ipairs(filtered) do
+                if i == selected then
+                    write("> ")
+                else
+                    write("  ")
+                end
+
+                if d.state == DISK_STATE_ACTIVE then
+                    term.setTextColor(colors.green)
+                else
+                    term.setTextColor(colors.red)
+                end
+
+                print(shortHash(d.idHash) .. " - " .. string.upper(d.state))
+                term.setTextColor(colors.white)
+            end
+
+            print("")
+            print("W/S or up/down | Enter | A/left")
+
+            local key = waitForKey()
+
+            if key == keys.w or key == keys.up then
+                selected = selected - 1
+                if selected < 1 then
+                    selected = #filtered
+                end
+            elseif key == keys.s or key == keys.down then
+                selected = selected + 1
+                if selected > #filtered then
+                    selected = 1
+                end
+            elseif key == keys.enter then
+                return filtered[selected]
+            elseif key == keys.a or key == keys.left then
+                return nil
+            end
+        end
+    end
+end
+
+local function revokeDiskMenu(username)
+    local diskEntry = chooseUserDisk(username, "Revoke Disk", DISK_STATE_ACTIVE)
+    if not diskEntry then
+        return
+    end
+
+    if setDiskState(username, diskEntry.idHash, DISK_STATE_REVOKED) then
+        logMessage("DISK REVOKED - " .. username .. " id=" .. shortHash(diskEntry.idHash))
+        clear()
+        print("Disk revoked.")
+        print("")
+        print("ID: " .. shortHash(diskEntry.idHash))
+        sleep(2)
+    end
+end
+
+local function unrevokeDiskMenu(username)
+    local diskEntry = chooseUserDisk(username, "Unrevoke Disk", DISK_STATE_REVOKED)
+    if not diskEntry then
+        return
+    end
+
+    if setDiskState(username, diskEntry.idHash, DISK_STATE_ACTIVE) then
+        logMessage("DISK UNREVOKED - " .. username .. " id=" .. shortHash(diskEntry.idHash))
+        clear()
+        print("Disk activated.")
+        print("")
+        print("ID: " .. shortHash(diskEntry.idHash))
+        sleep(2)
+    end
+end
+
+local function removeDiskMenu(username)
+    local diskEntry = chooseUserDisk(username, "Remove Disk Record", nil)
+    if not diskEntry then
+        return
+    end
+
+    clear()
+    print("Remove Disk Record")
+    print("------------------")
+    print("")
+    print("User: " .. username)
+    print("ID: " .. shortHash(diskEntry.idHash))
+    print("")
+    print("Enter = Yes")
+    print("A/left = No")
+
+    while true do
+        local k = waitForKey()
+        if k == keys.enter then
+            if removeDiskRecord(username, diskEntry.idHash) then
+                logMessage("DISK REMOVED - " .. username .. " id=" .. shortHash(diskEntry.idHash))
+                print("")
+                print("Disk record removed.")
+                sleep(2)
+            end
+            return
+        elseif k == keys.a or k == keys.left then
+            return
+        end
+    end
+end
+
+local function userDisksMenu(username)
+    local options = {
+        "Add disk",
+        "List disks",
+        "Revoke disk",
+        "Unrevoke disk",
+        "Remove disk record",
+        "Back"
+    }
+
+    local selected = 1
+
+    while true do
+        clear()
+        print("================================")
+        print("            Disks")
+        print("================================")
+        print("")
+        print("User: " .. username)
+        print("")
+
+        for i, option in ipairs(options) do
+            if i == selected then
+                print("> " .. option)
+            else
+                print("  " .. option)
+            end
+        end
+
+        print("")
+        print("W/S or up/down | Enter | A/left")
+
+        local key = waitForKey()
+
+        if key == keys.w or key == keys.up then
+            selected = selected - 1
+            if selected < 1 then
+                selected = #options
+            end
+        elseif key == keys.s or key == keys.down then
+            selected = selected + 1
+            if selected > #options then
+                selected = 1
+            end
+        elseif key == keys.enter then
+            local option = options[selected]
+
+            if option == "Add disk" then
+                writeAuthDiskForUser(username)
+            elseif option == "List disks" then
+                listUserDisksScreen(username)
+            elseif option == "Revoke disk" then
+                revokeDiskMenu(username)
+            elseif option == "Unrevoke disk" then
+                unrevokeDiskMenu(username)
+            elseif option == "Remove disk record" then
+                removeDiskMenu(username)
+            elseif option == "Back" then
+                return
+            end
+        elseif key == keys.a or key == keys.left then
+            return
+        end
+    end
 end
 
 local function userActionMenu(username)
@@ -810,8 +1340,8 @@ local function userActionMenu(username)
                     changeSelectedUserState(username, USER_STATE_ADMIN)
                 end
                 return
-            elseif option == "Make auth disk" then
-                writeAuthDiskForUser(username)
+            elseif option == "Disks" then
+                userDisksMenu(username)
             elseif option == "Remove" then
                 removeSelectedUser(username)
                 return
@@ -830,6 +1360,7 @@ local function usersMenu()
     while true do
         local users = loadUsers()
         local userStates = syncUserStates()
+        syncUserDisks()
         local userList = getUserList(users)
 
         local options = #userList + 1
@@ -897,6 +1428,7 @@ end
 addUser = function()
     local users = loadUsers()
     local userStates = loadUserStates()
+    local userDisks = loadUserDisks()
 
     clear()
     print("Add User")
@@ -905,6 +1437,7 @@ addUser = function()
     write("Username: ")
 
     local username = read()
+    username = trim(username)
 
     if username == "" then
         print("")
@@ -977,9 +1510,11 @@ addUser = function()
 
     users[username] = passwordHash
     userStates[username] = USER_STATE_ACTIVE
+    userDisks[username] = {}
 
     saveUsers(users)
     saveUserStates(userStates)
+    saveUserDisks(userDisks)
 
     logMessage("User added: " .. username .. " (active)")
 
@@ -1042,7 +1577,7 @@ local function updateServer()
         download(unpack(value))
     end
 
-    logMessage("Server updated server")
+    logMessage("Server updated")
 
     print("")
     print("Update successful.")
@@ -1155,6 +1690,8 @@ end
 -- Main process
 --------------------------------------------------
 
+math.randomseed((os.epoch and os.epoch("utc") or os.time()) + SERVER_ID)
+
 rednet.open("bottom")
 
 clear()
@@ -1167,6 +1704,7 @@ print("")
 logMessage("Door server " .. VERSION .. " started on computer " .. SERVER_ID)
 
 syncUserStates()
+syncUserDisks()
 
 if not fs.exists(AUTH_DRIVE_CONFIG_FILE) then
     saveAuthDiskDrivePath(DEFAULT_AUTH_DISK_DRIVE_PATH)
