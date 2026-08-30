@@ -1014,7 +1014,7 @@ end
 function download(name, url)
     print("Updating " .. name)
 
-    local request = http.get(url)
+    local request = http.get(url, { ["Cache-Control"] = "no-cache, no-store, must-revalidate" })
     if not request then
         print("Failed to download " .. name)
         return

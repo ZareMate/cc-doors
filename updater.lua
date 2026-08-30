@@ -5,7 +5,7 @@ print(VERSION)
 function download(name, url)
   print("Updating " .. name)
  
-  request = http.get(url)
+  request = http.get(url, { ["Cache-Control"] = "no-cache, no-store, must-revalidate" })
   data = request.readAll()
  
   if fs.exists(name) then
