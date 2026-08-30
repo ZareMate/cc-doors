@@ -342,7 +342,6 @@ local function getAuthDiskInfo()
     return {
         mountPath = authDrivePath,
         drivePath = authDrivePath
-        side = "left"
     }, nil
 end
 
@@ -395,7 +394,7 @@ local function writeAuthDiskForUser(username)
 
     local label = "Access - " .. username
     pcall(function()
-        disk.setLabel(info.side, label)
+        disk.setLabel("left", label)
     end)
 
     print("Auth disk written successfully.")
