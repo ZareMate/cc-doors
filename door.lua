@@ -747,6 +747,8 @@ local function diskAccessListener()
                         if type(hash) == "string" then
                             hash = hash:gsub("^%s+", ""):gsub("%s+$", "")
                             if hash ~= "" then
+                                -- Always eject
+                                disk.eject(DRIVE_SIDE)
                                 authenticateDoorHash(hash)
                             end
                         end
@@ -754,8 +756,7 @@ local function diskAccessListener()
                 end
             end
 
-            -- Always eject after handling
-            disk.eject(DRIVE_SIDE)
+            
         end
     end
 end
