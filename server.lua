@@ -337,20 +337,12 @@ local function getAuthDiskInfo()
         return nil, "Auth drive path not found: " .. authDrivePath
     end
 
-    local side = disk.getDrive(authDrivePath)
-    if not side then
-        return nil, "No disk drive at " .. authDrivePath
-    end
-
-    local mountPath = disk.getMountPath(side)
-    if not mountPath then
-        return nil, "No disk inserted in auth drive (" .. authDrivePath .. ")"
-    end
-
+    -- With FS-only approach, the path itself is the mount path.
+    -- Example: /disk2
     return {
-        side = side,
-        mountPath = mountPath,
+        mountPath = authDrivePath,
         drivePath = authDrivePath
+        side = "left"
     }, nil
 end
 
