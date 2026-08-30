@@ -1,4 +1,4 @@
-local VERSION = "v2.5"
+local VERSION = "v2.6"
 
 local SERVER_ID = 214
 

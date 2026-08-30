@@ -1,4 +1,4 @@
-local VERSION = "v2.5"
+local VERSION = "v2.6"
 
 print(VERSION)
 
