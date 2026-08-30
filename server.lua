@@ -5,6 +5,9 @@ local USER_STATES_FILE = "/disk/user_states"
 local LOG_FILE = "/disk/log"
 local SHA256_FILE = "/sha256"
 
+local AUTH_DRIVE_CONFIG_FILE = "/disk/auth_drive_path"
+local DEFAULT_AUTH_DISK_DRIVE_PATH = "/disk2"
+
 local urls = {
   {"startup", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/server.lua"},
   {"sha256", "https://raw.githubusercontent.com/ZareMate/cc-doors/refs/heads/main/sha256.lua"},
@@ -142,13 +145,43 @@ local function logMessage(message)
         file.writeLine(
             "[" .. date .. "] " .. message
         )
-
         file.close()
     end
 
-    print(
-        "[" .. date .. "] " .. message
-    )
+    print("[" .. date .. "] " .. message)
+end
+
+local function loadAuthDiskDrivePath()
+    if not fs.exists(AUTH_DRIVE_CONFIG_FILE) then
+        return DEFAULT_AUTH_DISK_DRIVE_PATH
+    end
+
+    local file = fs.open(AUTH_DRIVE_CONFIG_FILE, "r")
+    if not file then
+        return DEFAULT_AUTH_DISK_DRIVE_PATH
+    end
+
+    local path = file.readAll() or ""
+    file.close()
+
+    path = path:gsub("^%s+", ""):gsub("%s+$", "")
+
+    if path == "" then
+        return DEFAULT_AUTH_DISK_DRIVE_PATH
+    end
+
+    return path
+end
+
+local function saveAuthDiskDrivePath(path)
+    local file = fs.open(AUTH_DRIVE_CONFIG_FILE, "w")
+    if not file then
+        return false
+    end
+
+    file.write(path)
+    file.close()
+    return true
 end
 
 --------------------------------------------------
@@ -165,11 +198,7 @@ local function syncUserStates()
             userStates[username] = USER_STATE_INACTIVE
             changed = true
 
-            logMessage(
-                "User state initialized: " ..
-                username ..
-                " -> inactive"
-            )
+            logMessage("User state initialized: " .. username .. " -> inactive")
         end
     end
 
@@ -191,55 +220,16 @@ local function getUserState(userStates, username)
         return state
     end
 
-    -- Users without a state entry are inactive.
     return USER_STATE_INACTIVE
 end
 
 local function isUserActive(userStates, username)
     local state = getUserState(userStates, username)
-
-    return state == USER_STATE_ACTIVE
-        or state == USER_STATE_ADMIN
+    return state == USER_STATE_ACTIVE or state == USER_STATE_ADMIN
 end
 
 local function isUserAdmin(userStates, username)
     return getUserState(userStates, username) == USER_STATE_ADMIN
-end
-
-local function getAdminList(userStates)
-    local adminList = {}
-
-    for username, state in pairs(userStates) do
-        if state == USER_STATE_ADMIN then
-            table.insert(adminList, username)
-        end
-    end
-
-    table.sort(adminList)
-
-    return adminList
-end
-
---------------------------------------------------
--- Logging
---------------------------------------------------
-
-local function logMessage(message)
-    local date = os.date("%Y-%m-%d %H:%M:%S")
-
-    local file = fs.open(LOG_FILE, "a")
-
-    if file then
-        file.writeLine(
-            "[" .. date .. "] " .. message
-        )
-
-        file.close()
-    end
-
-    print(
-        "[" .. date .. "] " .. message
-    )
 end
 
 --------------------------------------------------
@@ -261,7 +251,6 @@ local function waitForKey()
 
         if event == "terminate" then
             -- Ignore Ctrl+T
-
         elseif event == "key" then
             return key
         end
@@ -288,7 +277,6 @@ local function getUserByHash(users, hash)
     for username, passwordHash in pairs(users) do
         if passwordHash ~= ""
             and passwordHash == hash then
-
             return username
         end
     end
@@ -301,7 +289,6 @@ local function hasAdminPassword(users, userStates)
         if state == USER_STATE_ADMIN
             and users[username]
             and users[username] ~= "" then
-
             return true
         end
     end
@@ -316,13 +303,10 @@ end
 local function setUserStateColor(state)
     if state == USER_STATE_ADMIN then
         term.setTextColor(colors.yellow)
-
     elseif state == USER_STATE_ACTIVE then
         term.setTextColor(colors.green)
-
     elseif state == USER_STATE_INACTIVE then
         term.setTextColor(colors.red)
-
     else
         term.setTextColor(colors.white)
     end
@@ -338,14 +322,142 @@ local function printUserState(username, state, selected)
     end
 
     setUserStateColor(state)
-
-    print(
-        username ..
-        " - " ..
-        string.upper(state)
-    )
-
+    print(username .. " - " .. string.upper(state))
     term.setTextColor(colors.white)
+end
+
+--------------------------------------------------
+-- Auth disk helpers
+--------------------------------------------------
+
+local function getAuthDiskInfo()
+    local authDrivePath = loadAuthDiskDrivePath()
+
+    if not fs.exists(authDrivePath) then
+        return nil, "Auth drive path not found: " .. authDrivePath
+    end
+
+    local side = disk.getDrive(authDrivePath)
+    if not side then
+        return nil, "No disk drive at " .. authDrivePath
+    end
+
+    local mountPath = disk.getMountPath(side)
+    if not mountPath then
+        return nil, "No disk inserted in auth drive (" .. authDrivePath .. ")"
+    end
+
+    return {
+        side = side,
+        mountPath = mountPath,
+        drivePath = authDrivePath
+    }, nil
+end
+
+local function writeAuthDiskForUser(username)
+    local users = loadUsers()
+    local userHash = users[username]
+
+    clear()
+    print("Make Auth Disk")
+    print("--------------")
+    print("")
+    print("User: " .. username)
+    print("")
+
+    if not userHash or userHash == "" then
+        print("User has no password hash.")
+        print("Cannot create auth disk.")
+        sleep(2)
+        return
+    end
+
+    local info, err = getAuthDiskInfo()
+    if not info then
+        print(err)
+        sleep(2)
+        return
+    end
+
+    local diskLogPath = fs.combine(info.mountPath, "log")
+    if fs.exists(diskLogPath) then
+        print("ABORTED: Selected disk looks like main data disk.")
+        print("Found log file: " .. diskLogPath)
+        print("Auth disk was not modified.")
+        logMessage("AUTH DISK ABORTED - log file detected on " .. info.mountPath)
+        sleep(3)
+        return
+    end
+
+    local hashPath = fs.combine(info.mountPath, "hash")
+    local file = fs.open(hashPath, "w")
+
+    if not file then
+        print("Failed to write hash file.")
+        sleep(2)
+        return
+    end
+
+    file.write(userHash)
+    file.close()
+
+    local label = "Access - " .. username
+    pcall(function()
+        disk.setLabel(info.side, label)
+    end)
+
+    print("Auth disk written successfully.")
+    print("Label: " .. label)
+    print("Drive path: " .. info.drivePath)
+    print("Path: " .. hashPath)
+
+    logMessage("AUTH DISK CREATED - " .. username .. " on " .. info.mountPath)
+
+    sleep(2)
+end
+
+local function setAuthDrivePathMenu()
+    clear()
+
+    local current = loadAuthDiskDrivePath()
+
+    print("Set Auth Drive Path")
+    print("-------------------")
+    print("")
+    print("Current: " .. current)
+    print("Default: " .. DEFAULT_AUTH_DISK_DRIVE_PATH)
+    print("")
+    print("Example: /disk2")
+    print("Leave empty to reset to default.")
+    print("")
+    write("New path: ")
+
+    local input = read()
+    local newPath = input:gsub("^%s+", ""):gsub("%s+$", "")
+
+    if newPath == "" then
+        newPath = DEFAULT_AUTH_DISK_DRIVE_PATH
+    end
+
+    if newPath:sub(1, 1) ~= "/" then
+        print("")
+        print("Path must start with '/'.")
+        sleep(2)
+        return
+    end
+
+    if saveAuthDiskDrivePath(newPath) then
+        logMessage("AUTH DRIVE PATH SET - " .. newPath)
+
+        print("")
+        print("Auth drive path saved.")
+        print("Now using: " .. newPath)
+        sleep(2)
+    else
+        print("")
+        print("Failed to save auth drive path.")
+        sleep(2)
+    end
 end
 
 --------------------------------------------------
@@ -359,60 +471,21 @@ local function handleDoorAuth(sender, message)
     if type(message) ~= "table"
         or message.type ~= "auth"
         or type(message.hash) ~= "string" then
-
-        rednet.send(
-            sender,
-            false,
-            "door_auth"
-        )
-
+        rednet.send(sender, false, "door_auth")
         return
     end
 
-    local username = getUserByHash(
-        users,
-        message.hash
-    )
+    local username = getUserByHash(users, message.hash)
 
     if username and isUserActive(userStates, username) then
-        rednet.send(
-            sender,
-            true,
-            "door_auth"
-        )
-
-        logMessage(
-            "ACCESS GRANTED - " ..
-            username ..
-            " (" ..
-            getUserState(userStates, username) ..
-            ", Computer " ..
-            sender ..
-            ")"
-        )
-
+        rednet.send(sender, true, "door_auth")
+        logMessage("ACCESS GRANTED - " .. username .. " (" .. getUserState(userStates, username) .. ", Computer " .. sender .. ")")
     else
-        rednet.send(
-            sender,
-            false,
-            "door_auth"
-        )
-
+        rednet.send(sender, false, "door_auth")
         if username then
-            logMessage(
-                "ACCESS DENIED - " ..
-                username ..
-                " (" ..
-                getUserState(userStates, username) ..
-                ", Computer " ..
-                sender ..
-                ")"
-            )
+            logMessage("ACCESS DENIED - " .. username .. " (" .. getUserState(userStates, username) .. ", Computer " .. sender .. ")")
         else
-            logMessage(
-                "ACCESS DENIED - Computer " ..
-                sender
-            )
+            logMessage("ACCESS DENIED - Computer " .. sender)
         end
     end
 end
@@ -424,67 +497,24 @@ local function handleAdminAuth(sender, message)
     if type(message) ~= "table"
         or message.type ~= "admin_auth"
         or type(message.hash) ~= "string" then
-
-        rednet.send(
-            sender,
-            {
-                success = false
-            },
-            "admin_auth_response"
-        )
-
+        rednet.send(sender, { success = false }, "admin_auth_response")
         return
     end
 
-    local username = getUserByHash(
-        users,
-        message.hash
-    )
+    local username = getUserByHash(users, message.hash)
 
     if username and isUserAdmin(userStates, username) then
-        rednet.send(
-            sender,
-            {
-                success = true,
-                username = username
-            },
-            "admin_auth_response"
-        )
-
-        logMessage(
-            "ADMIN AUTH - " ..
-            username ..
-            " (Computer " ..
-            sender ..
-            ")"
-        )
-
+        rednet.send(sender, { success = true, username = username }, "admin_auth_response")
+        logMessage("ADMIN AUTH - " .. username .. " (Computer " .. sender .. ")")
         return
     end
 
-    rednet.send(
-        sender,
-        {
-            success = false
-        },
-        "admin_auth_response"
-    )
+    rednet.send(sender, { success = false }, "admin_auth_response")
 
     if username then
-        logMessage(
-            "ADMIN AUTH FAILED - " ..
-            username ..
-            " is " ..
-            getUserState(userStates, username) ..
-            " (Computer " ..
-            sender ..
-            ")"
-        )
+        logMessage("ADMIN AUTH FAILED - " .. username .. " is " .. getUserState(userStates, username) .. " (Computer " .. sender .. ")")
     else
-        logMessage(
-            "ADMIN AUTH FAILED - Computer " ..
-            sender
-        )
+        logMessage("ADMIN AUTH FAILED - Computer " .. sender)
     end
 end
 
@@ -492,25 +522,15 @@ local function authenticationListener()
     rednet.open("bottom")
 
     while true do
-        local event, sender, message, protocol =
-            os.pullEventRaw()
+        local event, sender, message, protocol = os.pullEventRaw()
 
         if event == "terminate" then
             -- Ignore Ctrl+T
-
         elseif event == "rednet_message" then
-
             if protocol == "door_auth" then
-                handleDoorAuth(
-                    sender,
-                    message
-                )
-
+                handleDoorAuth(sender, message)
             elseif protocol == "admin_auth" then
-                handleAdminAuth(
-                    sender,
-                    message
-                )
+                handleAdminAuth(sender, message)
             end
         end
     end
@@ -524,12 +544,10 @@ local function readAdminPassword(firstChar)
     local input = firstChar or ""
 
     clear()
-
     print("Admin Authentication")
     print("--------------------")
     print("             " .. VERSION)
     print("")
-
     write("Password: ")
 
     if firstChar then
@@ -543,32 +561,23 @@ local function readAdminPassword(firstChar)
 
         if event == "terminate" then
             -- Ignore Ctrl+T
-
         elseif event == "char" then
             input = input .. p1
             write("*")
-
         elseif event == "key" then
             if p1 == keys.backspace then
                 if #input > 0 then
                     input = input:sub(1, -2)
-
                     local x, y = term.getCursorPos()
-
                     term.setCursorPos(x - 1, y)
                     write(" ")
                     term.setCursorPos(x - 1, y)
                 end
-
             elseif p1 == keys.enter then
                 term.setCursorBlink(false)
                 print("")
                 return input
-
-            elseif p1 == keys.esc
-                or p1 == keys.left
-                or p1 == keys.a then
-
+            elseif p1 == keys.esc or p1 == keys.left or p1 == keys.a then
                 term.setCursorBlink(false)
                 print("")
                 return nil
@@ -583,35 +592,24 @@ local function authenticateAdmin(firstChar)
 
     if not hasAdminPassword(users, userStates) then
         clear()
-
         print("Admin Authentication")
         print("--------------------")
         print("             " .. VERSION)
         print("")
         print("No admin passwords configured.")
         print("Menu unlocked.")
-
         sleep(1)
-
         return true
     end
 
     local password = readAdminPassword(firstChar)
-
     if password == nil then
         return false
     end
 
     local hash = sha256(password)
 
-    rednet.send(
-        SERVER_ID,
-        {
-            type = "admin_auth",
-            hash = hash
-        },
-        "admin_auth"
-    )
+    rednet.send(SERVER_ID, { type = "admin_auth", hash = hash }, "admin_auth")
 
     print("")
     print("Checking...")
@@ -619,123 +617,30 @@ local function authenticateAdmin(firstChar)
     local timer = os.startTimer(10)
 
     while true do
-        local event, p1, p2, p3 =
-            os.pullEventRaw()
+        local event, p1, p2, p3 = os.pullEventRaw()
 
         if event == "terminate" then
             -- Ignore Ctrl+T
-
-        elseif event == "rednet_message"
-            and p1 == SERVER_ID
-            and p3 == "admin_auth_response" then
-
+        elseif event == "rednet_message" and p1 == SERVER_ID and p3 == "admin_auth_response" then
             os.cancelTimer(timer)
 
             local response = p2
-
-            if type(response) == "table"
-                and response.success == true then
-
+            if type(response) == "table" and response.success == true then
                 print("")
-                print(
-                    "Authenticated as " ..
-                    (response.username or "admin")
-                )
-
+                print("Authenticated as " .. (response.username or "admin"))
                 sleep(1)
-
                 return true
             end
 
             print("")
             print("Invalid admin password.")
-
             sleep(2)
-
             return false
-
-        elseif event == "timer"
-            and p1 == timer then
-
+        elseif event == "timer" and p1 == timer then
             print("")
             print("Authentication timed out.")
-
             sleep(2)
-
             return false
-        end
-    end
-end
-
---------------------------------------------------
--- Select user
---------------------------------------------------
-
-local function selectUser(title)
-    local users = loadUsers()
-    local userStates = loadUserStates()
-    local userList = getUserList(users)
-
-    if #userList == 0 then
-        clear()
-
-        print(title)
-        print("------------")
-        print("")
-        print("No users.")
-
-        sleep(2)
-
-        return nil
-    end
-
-    local selected = 1
-
-    while true do
-        clear()
-
-        print(title)
-        print("------------")
-        print("")
-
-        for i, username in ipairs(userList) do
-            printUserState(
-                username,
-                getUserState(userStates, username),
-                i == selected
-            )
-        end
-
-        print("")
-        print("W/S or up/down | Enter | A/left")
-
-        local key = waitForKey()
-
-        if key == keys.w
-            or key == keys.up then
-
-            selected = selected - 1
-
-            if selected < 1 then
-                selected = #userList
-            end
-
-        elseif key == keys.s
-            or key == keys.down then
-
-            selected = selected + 1
-
-            if selected > #userList then
-                selected = 1
-            end
-
-        elseif key == keys.enter then
-            return userList[selected]
-
-        elseif key == keys.a
-            or key == keys.left then
-
-            return nil
         end
     end
 end
@@ -744,15 +649,12 @@ end
 -- User management
 --------------------------------------------------
 
--- Forward declaration because usersMenu() can call addUser()
--- before the addUser function is defined later in the file.
 local addUser
 
 local function changeUserPassword(username)
     local users = loadUsers()
 
     clear()
-
     print("Change Password")
     print("---------------")
     print("")
@@ -760,7 +662,6 @@ local function changeUserPassword(username)
     print("")
     print("Leave empty to remove password.")
     print("")
-
     write("New password: ")
 
     local password = read("*")
@@ -769,9 +670,7 @@ local function changeUserPassword(username)
         print("")
         print("The password 'admin' is reserved.")
         print("Choose another password.")
-
         sleep(2)
-
         return
     end
 
@@ -782,15 +681,10 @@ local function changeUserPassword(username)
     end
 
     saveUsers(users)
-
-    logMessage(
-        "Password changed: " ..
-        username
-    )
+    logMessage("Password changed: " .. username)
 
     print("")
     print("Password updated.")
-
     sleep(2)
 end
 
@@ -799,7 +693,6 @@ local function removeSelectedUser(username)
     local userStates = loadUserStates()
 
     clear()
-
     print("Remove User")
     print("-----------")
     print("")
@@ -816,25 +709,14 @@ local function removeSelectedUser(username)
         if key == keys.enter then
             users[username] = nil
             userStates[username] = nil
-
             saveUsers(users)
             saveUserStates(userStates)
-
-            logMessage(
-                "User removed: " ..
-                username
-            )
-
+            logMessage("User removed: " .. username)
             print("")
             print("User removed.")
-
             sleep(2)
-
             return
-
-        elseif key == keys.a
-            or key == keys.left then
-
+        elseif key == keys.a or key == keys.left then
             return
         end
     end
@@ -842,16 +724,9 @@ end
 
 local function changeSelectedUserState(username, newState)
     local userStates = loadUserStates()
-
     userStates[username] = newState
     saveUserStates(userStates)
-
-    logMessage(
-        "User state changed: " ..
-        username ..
-        " -> " ..
-        newState
-    )
+    logMessage("User state changed: " .. username .. " -> " .. newState)
 end
 
 local function getUserActionOptions(state)
@@ -869,6 +744,7 @@ local function getUserActionOptions(state)
         table.insert(options, "Admin")
     end
 
+    table.insert(options, "Make auth disk")
     table.insert(options, "Remove")
     table.insert(options, "Change password")
 
@@ -892,7 +768,6 @@ local function userActionMenu(username)
         end
 
         clear()
-
         print("================================")
         print("          User Actions")
         print("================================")
@@ -903,7 +778,6 @@ local function userActionMenu(username)
         setUserStateColor(state)
         print("State: " .. string.upper(state))
         term.setTextColor(colors.white)
-
         print("")
 
         for i, option in ipairs(options) do
@@ -919,67 +793,41 @@ local function userActionMenu(username)
 
         local key = waitForKey()
 
-        if key == keys.w
-            or key == keys.up then
-
+        if key == keys.w or key == keys.up then
             selected = selected - 1
-
             if selected < 1 then
                 selected = #options
             end
-
-        elseif key == keys.s
-            or key == keys.down then
-
+        elseif key == keys.s or key == keys.down then
             selected = selected + 1
-
             if selected > #options then
                 selected = 1
             end
-
         elseif key == keys.enter then
             local option = options[selected]
 
             if option == "Deactivate" then
-                changeSelectedUserState(
-                    username,
-                    USER_STATE_INACTIVE
-                )
+                changeSelectedUserState(username, USER_STATE_INACTIVE)
                 return
-
             elseif option == "Activate" then
-                changeSelectedUserState(
-                    username,
-                    USER_STATE_ACTIVE
-                )
+                changeSelectedUserState(username, USER_STATE_ACTIVE)
                 return
-
             elseif option == "Admin" then
                 if state == USER_STATE_ADMIN then
-                    changeSelectedUserState(
-                        username,
-                        USER_STATE_ACTIVE
-                    )
+                    changeSelectedUserState(username, USER_STATE_ACTIVE)
                 elseif state == USER_STATE_ACTIVE then
-                    changeSelectedUserState(
-                        username,
-                        USER_STATE_ADMIN
-                    )
+                    changeSelectedUserState(username, USER_STATE_ADMIN)
                 end
-
                 return
-
+            elseif option == "Make auth disk" then
+                writeAuthDiskForUser(username)
             elseif option == "Remove" then
                 removeSelectedUser(username)
                 return
-
             elseif option == "Change password" then
                 changeUserPassword(username)
             end
-
-        elseif key == keys.a
-            or key == keys.left then
-
+        elseif key == keys.a or key == keys.left then
             return
         end
     end
@@ -1001,18 +849,13 @@ local function usersMenu()
         end
 
         clear()
-
         print("================================")
         print("             Users")
         print("================================")
         print("")
 
         for i, username in ipairs(userList) do
-            printUserState(
-                username,
-                getUserState(userStates, username),
-                i == selected
-            )
+            printUserState(username, getUserState(userStates, username), i == selected)
         end
 
         if selected == addUserIndex then
@@ -1034,34 +877,23 @@ local function usersMenu()
 
         local key = waitForKey()
 
-        if key == keys.w
-            or key == keys.up then
-
+        if key == keys.w or key == keys.up then
             selected = selected - 1
-
             if selected < 1 then
                 selected = options
             end
-
-        elseif key == keys.s
-            or key == keys.down then
-
+        elseif key == keys.s or key == keys.down then
             selected = selected + 1
-
             if selected > options then
                 selected = 1
             end
-
         elseif key == keys.enter then
             if selected == addUserIndex then
                 addUser()
             else
                 userActionMenu(userList[selected])
             end
-
-        elseif key == keys.a
-            or key == keys.left then
-
+        elseif key == keys.a or key == keys.left then
             return
         end
     end
@@ -1076,11 +908,9 @@ addUser = function()
     local userStates = loadUserStates()
 
     clear()
-
     print("Add User")
     print("--------")
     print("")
-
     write("Username: ")
 
     local username = read()
@@ -1088,25 +918,20 @@ addUser = function()
     if username == "" then
         print("")
         print("Username cannot be empty.")
-
         sleep(2)
-
         return
     end
 
     if users[username] then
         print("")
         print("User already exists.")
-
         sleep(2)
-
         return
     end
 
     print("")
     print("Password is required.")
     print("")
-
     write("Password: ")
 
     local password = read("*")
@@ -1114,9 +939,7 @@ addUser = function()
     if password == "" then
         print("")
         print("Password cannot be empty.")
-
         sleep(2)
-
         return
     end
 
@@ -1124,51 +947,29 @@ addUser = function()
         print("")
         print("The password 'admin' is reserved.")
         print("Choose another password.")
-
         sleep(2)
-
         return
     end
 
     local passwordHash = sha256(password)
 
-    -- Check whether another user already has this password.
     for oldUsername, oldPasswordHash in pairs(users) do
         if oldUsername ~= username
             and oldPasswordHash ~= ""
             and oldPasswordHash == passwordHash then
 
-            local conflictFile =
-                "/disk/conflict_" ..
-                oldUsername ..
-                "_" ..
-                username
-
+            local conflictFile = "/disk/conflict_" .. oldUsername .. "_" .. username
             local file = fs.open(conflictFile, "w")
 
             if file then
-                file.writeLine(
-                    "Password conflict detected."
-                )
-                file.writeLine(
-                    "Existing user: " .. oldUsername
-                )
-                file.writeLine(
-                    "New user: " .. username
-                )
-                file.writeLine(
-                    "The new account was NOT created."
-                )
+                file.writeLine("Password conflict detected.")
+                file.writeLine("Existing user: " .. oldUsername)
+                file.writeLine("New user: " .. username)
+                file.writeLine("The new account was NOT created.")
                 file.close()
             end
 
-            logMessage(
-                "PASSWORD CONFLICT - " ..
-                "existing user: " ..
-                oldUsername ..
-                ", new user: " ..
-                username
-            )
+            logMessage("PASSWORD CONFLICT - existing user: " .. oldUsername .. ", new user: " .. username)
 
             print("")
             print("Password already in use.")
@@ -1179,28 +980,20 @@ addUser = function()
             print("Account NOT created.")
 
             sleep(3)
-
             return
         end
     end
 
     users[username] = passwordHash
-
-    -- New users start as active.
     userStates[username] = USER_STATE_ACTIVE
 
     saveUsers(users)
     saveUserStates(userStates)
 
-    logMessage(
-        "User added: " ..
-        username ..
-        " (active)"
-    )
+    logMessage("User added: " .. username .. " (active)")
 
     print("")
     print("User added.")
-
     sleep(2)
 end
 
@@ -1210,26 +1003,16 @@ end
 
 local function requestClientUpdate()
     clear()
-
     print("Request Client Update")
     print("---------------------")
     print("")
     print("Broadcasting update request...")
 
-    rednet.broadcast(
-        {
-            type = "update"
-        },
-        "door_control"
-    )
-
-    logMessage(
-        "UPDATE REQUEST - Broadcast"
-    )
+    rednet.broadcast({ type = "update" }, "door_control")
+    logMessage("UPDATE REQUEST - Broadcast")
 
     print("")
     print("Update request broadcast.")
-
     sleep(2)
 end
 
@@ -1238,23 +1021,27 @@ end
 --------------------------------------------------
 
 function download(name, url)
-  print("Updating " .. name)
- 
-  request = http.get(url)
-  data = request.readAll()
- 
-  if fs.exists(name) then
-    fs.delete(name)
-    file = fs.open(name, "w")
+    print("Updating " .. name)
+
+    local request = http.get(url)
+    if not request then
+        print("Failed to download " .. name)
+        return
+    end
+
+    local data = request.readAll()
+    request.close()
+
+    local file = fs.open(name, "w")
+    if not file then
+        print("Failed to write " .. name)
+        return
+    end
+
     file.write(data)
     file.close()
-  else
-    file = fs.open(name, "w")
-    file.write(data)
-    file.close()
-  end
- 
-  print("Successfully downloaded " .. name .. "\n")
+
+    print("Successfully downloaded " .. name .. "\n")
 end
 
 local function updateServer()
@@ -1264,16 +1051,13 @@ local function updateServer()
         download(unpack(value))
     end
 
-    logMessage(
-        "Server updated server"
-    )
+    logMessage("Server updated server")
 
     print("")
     print("Update successful.")
     print("Rebooting...")
 
     sleep(2)
-
     os.reboot()
 end
 
@@ -1288,9 +1072,10 @@ local function adminMenu(firstChar)
 
     local options = {
         "Users",
+        "Set auth drive path",
         "Request client update",
         "Update server",
-		"Exit Menu",
+        "Exit Menu",
         "Exit Program"
     }
 
@@ -1302,6 +1087,8 @@ local function adminMenu(firstChar)
         print("================================")
         print("        Door Server " .. VERSION)
         print("================================")
+        print("")
+        print("Auth drive path: " .. loadAuthDiskDrivePath())
         print("")
 
         for i, option in ipairs(options) do
@@ -1317,47 +1104,34 @@ local function adminMenu(firstChar)
 
         local key = waitForKey()
 
-        if key == keys.w
-            or key == keys.up then
-
+        if key == keys.w or key == keys.up then
             selected = selected - 1
-
             if selected < 1 then
                 selected = #options
             end
-
-        elseif key == keys.s
-            or key == keys.down then
-
+        elseif key == keys.s or key == keys.down then
             selected = selected + 1
-
             if selected > #options then
                 selected = 1
             end
-
         elseif key == keys.enter then
-
             if selected == 1 then
                 usersMenu()
-
             elseif selected == 2 then
-                requestClientUpdate()
-
+                setAuthDrivePathMenu()
             elseif selected == 3 then
-                updateServer()
-
+                requestClientUpdate()
             elseif selected == 4 then
+                updateServer()
+            elseif selected == 5 then
                 clear()
                 return
-			elseif selected == 5 then
+            elseif selected == 6 then
                 clear()
-                exit = 1
+                exit = true
                 return
             end
-
-        elseif key == keys.a
-            or key == keys.left then
-
+        elseif key == keys.a or key == keys.left then
             clear()
             return
         end
@@ -1373,16 +1147,8 @@ local function startListener()
         error("Multishell is required")
     end
 
-    local processID = multishell.launch(
-        {},
-        "/startup",
-        LISTENER_ARG
-    )
-
-    multishell.setTitle(
-        processID,
-        "Door Auth"
-    )
+    local processID = multishell.launch({}, "/startup", LISTENER_ARG)
+    multishell.setTitle(processID, "Door Auth")
 end
 
 --------------------------------------------------
@@ -1407,14 +1173,13 @@ print("        Door Server " .. VERSION)
 print("================================")
 print("")
 
-logMessage(
-    "Door server " ..
-    VERSION ..
-    " started on computer " ..
-    SERVER_ID
-)
+logMessage("Door server " .. VERSION .. " started on computer " .. SERVER_ID)
 
 syncUserStates()
+
+if not fs.exists(AUTH_DRIVE_CONFIG_FILE) then
+    saveAuthDiskDrivePath(DEFAULT_AUTH_DISK_DRIVE_PATH)
+end
 
 startListener()
 
@@ -1427,15 +1192,11 @@ while not exit do
 
     if event == "terminate" then
         -- Ignore Ctrl+T
-
     elseif event == "char" then
-        -- Any typed character opens the admin password prompt.
-        -- Preserve the first character so it becomes part of the password.
         adminMenu(p1)
 
         if not exit then
             clear()
-
             print("================================")
             print("        Door Server " .. VERSION)
             print("================================")
