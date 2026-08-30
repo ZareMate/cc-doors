@@ -17,6 +17,7 @@ local urls = {
 }
 
 local exit = false
+local DRIVE_SIDE = "top"
 
 --------------------------------------------------
 -- UI
@@ -391,23 +392,28 @@ end
 --------------------------------------------------
 
 function download(name, url)
-  print("Updating " .. name)
- 
-  request = http.get(url)
-  data = request.readAll()
- 
-  if fs.exists(name) then
-    fs.delete(name)
-    file = fs.open(name, "w")
+    print("Updating " .. name)
+
+    local request = http.get(url)
+
+    if not request then
+        print("Failed to download " .. name)
+        return
+    end
+
+    local data = request.readAll()
+    request.close()
+
+    local file = fs.open(name, "w")
+    if not file then
+        print("Failed to write " .. name)
+        return
+    end
+
     file.write(data)
     file.close()
-  else
-    file = fs.open(name, "w")
-    file.write(data)
-    file.close()
-  end
- 
-  print("Successfully downloaded " .. name .. "\n")
+
+    print("Successfully downloaded " .. name .. "\n")
 end
 
 local function update()
@@ -659,6 +665,101 @@ local function authenticateDoor(password)
     end
 end
 
+local function authenticateDoorHash(hash)
+    rednet.send(
+        SERVER_ID,
+        {
+            type = "auth",
+            hash = hash
+        },
+        "door_auth"
+    )
+
+    print("")
+    print("Checking...")
+
+    local sender, response = receiveRednet(
+        "door_auth",
+        SERVER_TIMEOUT
+    )
+
+    clear()
+
+    if sender ~= SERVER_ID then
+        print("Door Access")
+        print("-----------")
+        print("")
+        print("No response from server.")
+        sleep(2)
+        return
+    end
+
+    if response == true then
+        print("Door Access")
+        print("-----------")
+        print("")
+        print("Access granted!")
+
+        redstone.setOutput(DOOR_SIDE, true)
+        sleep(2.5)
+        redstone.setOutput(DOOR_SIDE, false)
+
+        print("")
+        print("Door closed.")
+        sleep(1)
+    else
+        print("Door Access")
+        print("-----------")
+        print("")
+        print("Access denied!")
+        sleep(1)
+    end
+end
+
+--------------------------------------------------
+-- Disk access listener (top drive)
+--------------------------------------------------
+
+local function diskAccessListener()
+    while not exit do
+        local event, side = os.pullEventRaw()
+
+        if event == "terminate" then
+            -- Ignore Ctrl+T
+
+        elseif event == "disk" and side == DRIVE_SIDE then
+            local mountPath = disk.getMountPath(DRIVE_SIDE)
+            local label = disk.getLabel(DRIVE_SIDE)
+
+            -- Accept "Access" or "Access - anything"
+            local validLabel = type(label) == "string"
+                and (label == "Access" or label:match("^Access%s*%-%s*.+$"))
+
+            if mountPath and validLabel then
+                local hashPath = fs.combine(mountPath, "hash")
+
+                if fs.exists(hashPath) then
+                    local f = fs.open(hashPath, "r")
+                    if f then
+                        local hash = f.readAll()
+                        f.close()
+
+                        if type(hash) == "string" then
+                            hash = hash:gsub("^%s+", ""):gsub("%s+$", "")
+                            if hash ~= "" then
+                                authenticateDoorHash(hash)
+                            end
+                        end
+                    end
+                end
+            end
+
+            -- Always eject after handling
+            disk.eject(DRIVE_SIDE)
+        end
+    end
+end
+
 --------------------------------------------------
 -- Main screen
 --------------------------------------------------
@@ -727,10 +828,11 @@ local function updateListener()
 end
 
 --------------------------------------------------
--- Run both simultaneously
+-- Run simultaneously
 --------------------------------------------------
 
 parallel.waitForAny(
     mainLoop,
-    updateListener
+    updateListener,
+    diskAccessListener
 )
