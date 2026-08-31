@@ -729,25 +729,41 @@ local function handleDoorAuth(sender, message)
     if type(message) ~= "table"
         or message.type ~= "auth"
         or type(message.hash) ~= "string"
-        or type(message.disk_id_hash) ~= "string" then
+        or (message.disk_id_hash ~= nil and type(message.disk_id_hash) ~= "string") then
         rednet.send(sender, false, "door_auth")
         return
     end
 
     local username = getUserByHash(users, trim(message.hash))
-    local diskIdHash = trim(message.disk_id_hash)
+    local diskIdHash = trim(message.disk_id_hash or "")
+    local hasDisk = diskIdHash ~= ""
+    local isAuthorized = false
 
-    if username
-        and isUserActive(userStates, username)
-        and isDiskAuthorizedForUser(username, diskIdHash) then
+    if username and isUserActive(userStates, username) then
+        if hasDisk then
+            isAuthorized = isDiskAuthorizedForUser(username, diskIdHash)
+        else
+            isAuthorized = true
+        end
+    end
 
+    if isAuthorized then
         rednet.send(sender, true, "door_auth")
-        logMessage("ACCESS GRANTED - " .. username .. " (" .. getUserState(userStates, username) .. ", disk=" .. shortHash(diskIdHash) .. ", Computer " .. sender .. ")")
+
+        if hasDisk then
+            logMessage("ACCESS GRANTED - " .. username .. " (" .. getUserState(userStates, username) .. ", disk=" .. shortHash(diskIdHash) .. ", Computer " .. sender .. ")")
+        else
+            logMessage("ACCESS GRANTED - " .. username .. " (" .. getUserState(userStates, username) .. ", password, Computer " .. sender .. ")")
+        end
     else
         rednet.send(sender, false, "door_auth")
 
         if username then
-            logMessage("ACCESS DENIED - " .. username .. " (" .. getUserState(userStates, username) .. ", disk=" .. shortHash(diskIdHash) .. ", Computer " .. sender .. ")")
+            if hasDisk then
+                logMessage("ACCESS DENIED - " .. username .. " (" .. getUserState(userStates, username) .. ", disk=" .. shortHash(diskIdHash) .. ", Computer " .. sender .. ")")
+            else
+                logMessage("ACCESS DENIED - " .. username .. " (" .. getUserState(userStates, username) .. ", password, Computer " .. sender .. ")")
+            end
         else
             logMessage("ACCESS DENIED - Computer " .. sender)
         end
