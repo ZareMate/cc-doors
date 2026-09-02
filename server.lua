@@ -1,4 +1,4 @@
-local VERSION = "v3.2"
+local VERSION = "v3.4"
 
 local USERS_FILE = "/disk/users"
 local USER_STATES_FILE = "/disk/user_states"
@@ -2079,9 +2079,52 @@ if ... == LISTENER_ARG then
 end
 
 if ... == ELEVATOR_ARG then
-    if authenticateAdmin(nil) then
-        elevatorMenu()
+    -- Elevator access requires a valid active user password,
+    -- but does NOT require admin status.
+    local users = loadUsers()
+    local userStates = syncUserStates()
+
+    clear()
+    print("================================")
+    print("         Elevator Login")
+    print("================================")
+    print("")
+    write("Password: ")
+    local password = read("*")
+
+    if isReservedPassword(password) then
+        clear()
+        print("Elevator Login")
+        print("--------------")
+        print("")
+        print("The 'admin' password")
+        print("cannot be used here.")
+        sleep(2)
+        return
     end
+
+    local hash = sha256(password)
+    local username = getUserByHash(users, hash)
+
+    if username and isUserActive(userStates, username) then
+        clear()
+        print("Elevator Login")
+        print("--------------")
+        print("")
+        print("Access granted.")
+        print("User: " .. username)
+        sleep(1)
+        elevatorMenu()
+    else
+        clear()
+        print("Elevator Login")
+        print("--------------")
+        print("")
+        print("Access denied.")
+        print("Invalid or inactive user.")
+        sleep(2)
+    end
+
     return
 end
 
