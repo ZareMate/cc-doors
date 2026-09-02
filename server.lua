@@ -1,4 +1,4 @@
-local VERSION = "v2.8"
+local VERSION = "v3.0"
 
 local USERS_FILE = "/disk/users"
 local USER_STATES_FILE = "/disk/user_states"
@@ -31,6 +31,10 @@ local RADAR_PROTOCOL = "radar"
 
 -- Protocol used to communicate with door opener computers.
 local DOOR_PROTOCOL = "door_control"
+
+-- Monitoring computer.
+local MONITOR_ID = 296
+local MONITOR_PROTOCOL = "door_monitor"
 
 -- Door detection zones.
 --
@@ -814,8 +818,12 @@ local function sendRadarDoorRequest(doorID, username, position, timestamp)
     end
 end
 
+local function sendMonitorInfo(info)
+    -- Send monitoring data through the right-side modem.
+    rednet.send(MONITOR_ID, info, MONITOR_PROTOCOL)
+end
+
 local function handleRadarData(sender, message)
-    -- Only accept radar data from the configured radar computer.
     if sender ~= RADAR_ID then
         logMessage(
             "RADAR DATA REJECTED - Computer "
@@ -831,17 +839,12 @@ local function handleRadarData(sender, message)
         return
     end
 
-    local timestamp = message.timestamp
-        or os.epoch("utc")
-
-    -- Radar door access follows the same user-state rules as
-    -- normal door authentication: active and admin are allowed,
-    -- inactive or unknown users are not allowed.
+    local timestamp = message.timestamp or os.epoch("utc")
     local userStates = syncUserStates()
-
-    -- Keep track of which players were present in this radar update.
+    local players = {}
     local presentPlayers = {}
 
+    -- Keep all valid radar information.
     for username, position in pairs(message.data) do
         if type(username) == "string"
             and type(position) == "table"
@@ -849,55 +852,126 @@ local function handleRadarData(sender, message)
             and type(position.y) == "number"
             and type(position.z) == "number" then
 
-            -- Only active and admin users may trigger radar doors.
-            if isUserActive(userStates, username) then
-                presentPlayers[username] = true
+            players[username] = position
+            presentPlayers[username] = true
+        end
+    end
 
-                if type(radarDoorStates[username]) ~= "table" then
-                    radarDoorStates[username] = {}
-                end
+    -- A door is blocked if ANY unauthorized player is inside its zone.
+    local blockedDoors = {}
 
-                for doorID, zone in pairs(doors) do
-                    local inside = isInsideDoorZone(
-                        position.x,
-                        position.y,
-                        position.z,
-                        zone
-                    )
+    for doorID, zone in pairs(doors) do
+        blockedDoors[doorID] = false
 
-                    local wasInside =
-                        radarDoorStates[username][doorID] == true
-
-                    if inside and not wasInside then
-                        -- Player has just entered this door's zone.
-                        sendRadarDoorRequest(
-                            doorID,
-                            username,
-                            position,
-                            timestamp
-                        )
-                    end
-
-                    radarDoorStates[username][doorID] = inside
-                end
-            else
-                -- Treat inactive/unknown users as absent so that
-                -- changing them to active later allows a fresh entry.
-                radarDoorStates[username] = nil
-
-                logMessage(
-                    "RADAR ACCESS DENIED - "
-                    .. username
-                    .. " is "
-                    .. getUserState(userStates, username)
-                )
+        for username, position in pairs(players) do
+            if isInsideDoorZone(
+                position.x, position.y, position.z, zone
+            ) and not isUserActive(userStates, username) then
+                blockedDoors[doorID] = true
+                break
             end
         end
     end
 
-    -- Players no longer reported by the radar are considered
-    -- outside all door zones. This allows a new request when
-    -- they are detected again and enter a zone.
+    -- Build complete information for monitor computer 296.
+    local monitorPlayers = {}
+
+    for username, position in pairs(players) do
+        local authorized = isUserActive(userStates, username)
+        local playerDoors = {}
+
+        for doorID, zone in pairs(doors) do
+            playerDoors[doorID] = {
+                inside = isInsideDoorZone(
+                    position.x, position.y, position.z, zone
+                ),
+                authorized = authorized,
+                blocked = blockedDoors[doorID]
+            }
+        end
+
+        monitorPlayers[username] = {
+            position = {
+                x = position.x,
+                y = position.y,
+                z = position.z
+            },
+            state = getUserState(userStates, username),
+            authorized = authorized,
+            doors = playerDoors
+        }
+    end
+
+    -- Send the complete current state to monitor 296.
+    sendMonitorInfo({
+        type = "radar_update",
+        timestamp = timestamp,
+        radar_id = sender,
+        server_id = SERVER_ID,
+        players = monitorPlayers,
+        radar_data = message.data,
+        doors = doors,
+        blocked_doors = blockedDoors
+    })
+
+    -- Process authorized players and open doors on zone entry.
+    for username, position in pairs(players) do
+        if isUserActive(userStates, username) then
+            if type(radarDoorStates[username]) ~= "table" then
+                radarDoorStates[username] = {}
+            end
+
+            for doorID, zone in pairs(doors) do
+                local inside = isInsideDoorZone(
+                    position.x, position.y, position.z, zone
+                )
+                local wasInside =
+                    radarDoorStates[username][doorID] == true
+
+                if inside and not wasInside then
+                    if not blockedDoors[doorID] then
+                        sendRadarDoorRequest(
+                            doorID, username, position, timestamp
+                        )
+
+                        sendMonitorInfo({
+                            type = "door_open_request",
+                            timestamp = timestamp,
+                            server_id = SERVER_ID,
+                            door_id = doorID,
+                            username = username,
+                            position = {
+                                x = position.x,
+                                y = position.y,
+                                z = position.z
+                            },
+                            reason = "authorized_radar_entry"
+                        })
+                    else
+                        sendMonitorInfo({
+                            type = "door_open_blocked",
+                            timestamp = timestamp,
+                            server_id = SERVER_ID,
+                            door_id = doorID,
+                            username = username,
+                            position = {
+                                x = position.x,
+                                y = position.y,
+                                z = position.z
+                            },
+                            reason = "unauthorized_user_in_zone"
+                        })
+                    end
+                end
+
+                radarDoorStates[username][doorID] = inside
+            end
+        else
+            radarDoorStates[username] = nil
+        end
+    end
+
+    -- Players no longer detected are considered outside all zones.
     for username, states in pairs(radarDoorStates) do
         if not presentPlayers[username] then
             for doorID in pairs(states) do
@@ -1902,6 +1976,13 @@ end
 math.randomseed((os.epoch and os.epoch("utc") or os.time()) + SERVER_ID)
 
 rednet.open("bottom")
+
+if peripheral.getType("right") == "modem" then
+    rednet.open("right")
+else
+    logMessage("WARNING - No modem found on right side for monitor " .. MONITOR_ID)
+end
+
 
 clear()
 
