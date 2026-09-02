@@ -1,4 +1,4 @@
-local VERSION = "v2.7"
+local VERSION = "v2.8"
 
 local USERS_FILE = "/disk/users"
 local USER_STATES_FILE = "/disk/user_states"
