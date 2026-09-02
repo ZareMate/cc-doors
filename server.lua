@@ -24,7 +24,7 @@ local SERVER_ID = os.getComputerID()
 --------------------------------------------------
 
 -- Computer ID of the radar computer.
-local RADAR_ID = 194
+local RADAR_ID = 214
 
 -- Protocol used by the radar computer.
 local RADAR_PROTOCOL = "radar"
@@ -41,8 +41,8 @@ local DOOR_PROTOCOL = "door_control"
 --
 -- The two corners can be in any order.
 local doors = {
-    [216] = {-1544, 64, 388, -1548, 62, 384},
-    [213] = {-1604, 65, 463, -1601, 63, 467},
+    [101] = {-1560, 60, 405, -1550, 70, 415},
+    [102] = {-1500, 60, 400, -1490, 70, 410},
 
     -- [103] = {-1400, 60, 300, -1390, 70, 310},
 }
@@ -833,6 +833,11 @@ local function handleRadarData(sender, message)
     local timestamp = message.timestamp
         or os.epoch("utc")
 
+    -- Radar door access follows the same user-state rules as
+    -- normal door authentication: active and admin are allowed,
+    -- inactive or unknown users are not allowed.
+    local userStates = syncUserStates()
+
     -- Keep track of which players were present in this radar update.
     local presentPlayers = {}
 
@@ -843,34 +848,48 @@ local function handleRadarData(sender, message)
             and type(position.y) == "number"
             and type(position.z) == "number" then
 
-            presentPlayers[username] = true
+            -- Only active and admin users may trigger radar doors.
+            if isUserActive(userStates, username) then
+                presentPlayers[username] = true
 
-            if type(radarDoorStates[username]) ~= "table" then
-                radarDoorStates[username] = {}
-            end
-
-            for doorID, zone in pairs(doors) do
-                local inside = isInsideDoorZone(
-                    position.x,
-                    position.y,
-                    position.z,
-                    zone
-                )
-
-                local wasInside =
-                    radarDoorStates[username][doorID] == true
-
-                if inside and not wasInside then
-                    -- Player has just entered this door's zone.
-                    sendRadarDoorRequest(
-                        doorID,
-                        username,
-                        position,
-                        timestamp
-                    )
+                if type(radarDoorStates[username]) ~= "table" then
+                    radarDoorStates[username] = {}
                 end
 
-                radarDoorStates[username][doorID] = inside
+                for doorID, zone in pairs(doors) do
+                    local inside = isInsideDoorZone(
+                        position.x,
+                        position.y,
+                        position.z,
+                        zone
+                    )
+
+                    local wasInside =
+                        radarDoorStates[username][doorID] == true
+
+                    if inside and not wasInside then
+                        -- Player has just entered this door's zone.
+                        sendRadarDoorRequest(
+                            doorID,
+                            username,
+                            position,
+                            timestamp
+                        )
+                    end
+
+                    radarDoorStates[username][doorID] = inside
+                end
+            else
+                -- Treat inactive/unknown users as absent so that
+                -- changing them to active later allows a fresh entry.
+                radarDoorStates[username] = nil
+
+                logMessage(
+                    "RADAR ACCESS DENIED - "
+                    .. username
+                    .. " is "
+                    .. getUserState(userStates, username)
+                )
             end
         end
     end
