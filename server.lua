@@ -1,4 +1,4 @@
-local VERSION = "v3.1"
+local VERSION = "v3.2"
 
 local USERS_FILE = "/disk/users"
 local USER_STATES_FILE = "/disk/user_states"
@@ -16,6 +16,7 @@ local urls = {
 }
 
 local LISTENER_ARG = "listener"
+local ELEVATOR_ARG = "elevator"
 
 local SERVER_ID = os.getComputerID()
 
@@ -41,7 +42,14 @@ local MONITOR_PROTOCOL = "door_monitor"
 --------------------------------------------------
 
 -- Floor order is top to bottom.
-local ELEVATOR_FLOORS = {5, 4, 6, 7, 9, 8}
+local ELEVATOR_FLOORS = {
+    { id = 5, name = "Roof" },
+    { id = 4, name = "Ground" },
+    { id = 6, name = "Shop" },
+    { id = 7, name = "Storage" },
+    { id = 9, name = "Power" },
+    { id = 8, name = "Bunker" },
+}
 local ELEVATOR_RELAY_SIDE = "front"
 local ELEVATOR_PULSE_TIME = 0.5
 
@@ -566,20 +574,20 @@ local function elevatorRelayForFloor(floor)
 end
 
 local function callElevator(floor)
-    local relayName = elevatorRelayForFloor(floor)
+    local relayName = elevatorRelayForFloor(floor.id)
 
     clear()
     print("================================")
     print("         Elevator")
     print("================================")
     print("")
-    print("Floor: " .. tostring(floor))
-    print("Relay: redstone_relay_" .. tostring(floor))
+    print("Floor: " .. floor.name)
+    print("Relay: redstone_relay_" .. tostring(floor.id))
     print("")
 
     if not relayName then
         print("Relay not found!")
-        logMessage("ELEVATOR FAILED - relay redstone_relay_" .. tostring(floor) .. " not found")
+        logMessage("ELEVATOR FAILED - relay redstone_relay_" .. tostring(floor.id) .. " not found")
         sleep(2)
         return
     end
@@ -598,7 +606,7 @@ local function callElevator(floor)
     relay.setOutput(ELEVATOR_RELAY_SIDE, false)
 
     print("Command sent.")
-    logMessage("ELEVATOR - floor " .. tostring(floor) .. " via " .. relayName .. " side=" .. ELEVATOR_RELAY_SIDE)
+    logMessage("ELEVATOR - " .. floor.name .. " (" .. tostring(floor.id) .. ") via " .. relayName .. " side=" .. ELEVATOR_RELAY_SIDE)
     sleep(2)
 end
 
@@ -616,7 +624,7 @@ local function elevatorMenu()
 
         for i, floor in ipairs(ELEVATOR_FLOORS) do
             local marker = (i == selected) and "> " or "  "
-            print(marker .. "Floor " .. tostring(floor))
+            print(marker .. floor.name)
         end
 
         print("")
@@ -2049,13 +2057,16 @@ end
 -- Start authentication listener
 --------------------------------------------------
 
-local function startListener()
+local function startServerShells()
     if not multishell then
         error("Multishell is required")
     end
 
-    local processID = multishell.launch({}, "/startup", LISTENER_ARG)
-    multishell.setTitle(processID, "Door Auth")
+    local authProcessID = multishell.launch({}, "/startup", LISTENER_ARG)
+    multishell.setTitle(authProcessID, "Door Auth")
+
+    local elevatorProcessID = multishell.launch({}, "/startup", ELEVATOR_ARG)
+    multishell.setTitle(elevatorProcessID, "Elevator")
 end
 
 --------------------------------------------------
@@ -2064,6 +2075,13 @@ end
 
 if ... == LISTENER_ARG then
     authenticationListener()
+    return
+end
+
+if ... == ELEVATOR_ARG then
+    if authenticateAdmin(nil) then
+        elevatorMenu()
+    end
     return
 end
 
@@ -2098,7 +2116,7 @@ if not fs.exists(AUTH_DRIVE_CONFIG_FILE) then
     saveAuthDiskDrivePath(DEFAULT_AUTH_DISK_DRIVE_PATH)
 end
 
-startListener()
+startServerShells()
 
 --------------------------------------------------
 -- Main loop
@@ -2110,13 +2128,7 @@ while not exit do
     if event == "terminate" then
         -- Ignore Ctrl+T
     elseif event == "char" then
-        if p1 == "3" then
-            if authenticateAdmin(nil) then
-                elevatorMenu()
-            end
-        else
-            adminMenu(p1)
-        end
+        adminMenu(p1)
 
         if not exit then
             clear()
@@ -2125,7 +2137,8 @@ while not exit do
             print("================================")
             print("")
             print("Door server running...")
-            print("3 = Elevator | Other key = admin")
+            print("")
+            print("Use the Elevator tab for elevator control.")
         end
     end
 end
