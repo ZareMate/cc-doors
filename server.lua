@@ -1,4 +1,4 @@
-local VERSION = "v3.0"
+local VERSION = "v3.1"
 
 local USERS_FILE = "/disk/users"
 local USER_STATES_FILE = "/disk/user_states"
@@ -35,6 +35,16 @@ local DOOR_PROTOCOL = "door_control"
 -- Monitoring computer.
 local MONITOR_ID = 296
 local MONITOR_PROTOCOL = "door_monitor"
+
+--------------------------------------------------
+-- Elevator control
+--------------------------------------------------
+
+-- Floor order is top to bottom.
+local ELEVATOR_FLOORS = {5, 4, 6, 7, 9, 8}
+local ELEVATOR_RELAY_SIDE = "front"
+local ELEVATOR_PULSE_TIME = 0.5
+
 
 -- Door detection zones.
 --
@@ -540,6 +550,94 @@ local function waitForKey()
             -- Ignore Ctrl+T
         elseif event == "key" then
             return key
+        end
+    end
+end
+
+--------------------------------------------------
+-- Elevator control
+--------------------------------------------------
+
+local function elevatorRelayForFloor(floor)
+    return peripheral.getType("redstone_relay_" .. tostring(floor))
+        == "redstone_relay"
+        and "redstone_relay_" .. tostring(floor)
+        or nil
+end
+
+local function callElevator(floor)
+    local relayName = elevatorRelayForFloor(floor)
+
+    clear()
+    print("================================")
+    print("         Elevator")
+    print("================================")
+    print("")
+    print("Floor: " .. tostring(floor))
+    print("Relay: redstone_relay_" .. tostring(floor))
+    print("")
+
+    if not relayName then
+        print("Relay not found!")
+        logMessage("ELEVATOR FAILED - relay redstone_relay_" .. tostring(floor) .. " not found")
+        sleep(2)
+        return
+    end
+
+    local relay = peripheral.wrap(relayName)
+
+    if not relay or type(relay.setOutput) ~= "function" then
+        print("Invalid relay!")
+        logMessage("ELEVATOR FAILED - invalid relay " .. relayName)
+        sleep(2)
+        return
+    end
+
+    relay.setOutput(ELEVATOR_RELAY_SIDE, true)
+    sleep(ELEVATOR_PULSE_TIME)
+    relay.setOutput(ELEVATOR_RELAY_SIDE, false)
+
+    print("Command sent.")
+    logMessage("ELEVATOR - floor " .. tostring(floor) .. " via " .. relayName .. " side=" .. ELEVATOR_RELAY_SIDE)
+    sleep(2)
+end
+
+local function elevatorMenu()
+    local selected = 1
+
+    while true do
+        clear()
+        print("================================")
+        print("         Elevator")
+        print("================================")
+        print("")
+        print("Top -> Bottom")
+        print("")
+
+        for i, floor in ipairs(ELEVATOR_FLOORS) do
+            local marker = (i == selected) and "> " or "  "
+            print(marker .. "Floor " .. tostring(floor))
+        end
+
+        print("")
+        print("W/S or up/down | Enter | A/left")
+
+        local key = waitForKey()
+
+        if key == keys.w or key == keys.up then
+            selected = selected - 1
+            if selected < 1 then
+                selected = #ELEVATOR_FLOORS
+            end
+        elseif key == keys.s or key == keys.down then
+            selected = selected + 1
+            if selected > #ELEVATOR_FLOORS then
+                selected = 1
+            end
+        elseif key == keys.enter then
+            callElevator(ELEVATOR_FLOORS[selected])
+        elseif key == keys.a or key == keys.left then
+            return
         end
     end
 end
@@ -2012,7 +2110,13 @@ while not exit do
     if event == "terminate" then
         -- Ignore Ctrl+T
     elseif event == "char" then
-        adminMenu(p1)
+        if p1 == "3" then
+            if authenticateAdmin(nil) then
+                elevatorMenu()
+            end
+        else
+            adminMenu(p1)
+        end
 
         if not exit then
             clear()
@@ -2021,7 +2125,7 @@ while not exit do
             print("================================")
             print("")
             print("Door server running...")
-            print("Start typing to enter admin password.")
+            print("3 = Elevator | Other key = admin")
         end
     end
 end
