@@ -19,6 +19,35 @@ local LISTENER_ARG = "listener"
 
 local SERVER_ID = os.getComputerID()
 
+--------------------------------------------------
+-- Radar / Door Zones
+--------------------------------------------------
+
+-- Computer ID of the radar computer.
+local RADAR_ID = 214
+
+-- Protocol used by the radar computer.
+local RADAR_PROTOCOL = "radar"
+
+-- Protocol used to communicate with door opener computers.
+local DOOR_PROTOCOL = "door_control"
+
+-- Door detection zones.
+--
+-- [Door opener computer ID] = {
+--     x1, y1, z1,
+--     x2, y2, z2
+-- }
+--
+-- The two corners can be in any order.
+local doors = {
+    [216] = {-1544, 64, 388, -1548, 62, 384},
+    [213] = {-1604, 65, 463, -1601, 63, 467},
+
+    -- [103] = {-1400, 60, 300, -1390, 70, 310},
+}
+
+
 local RESERVED_PASSWORD = "admin"
 
 --------------------------------------------------
@@ -719,6 +748,146 @@ local function setAuthDrivePathMenu()
 end
 
 --------------------------------------------------
+-- Radar / Door handling
+--------------------------------------------------
+
+-- Tracks whether a player is currently inside each door zone.
+-- radarDoorStates[username][doorID] = true/false
+local radarDoorStates = {}
+
+local function isInsideDoorZone(x, y, z, zone)
+    local minX = math.min(zone[1], zone[4])
+    local minY = math.min(zone[2], zone[5])
+    local minZ = math.min(zone[3], zone[6])
+
+    local maxX = math.max(zone[1], zone[4])
+    local maxY = math.max(zone[2], zone[5])
+    local maxZ = math.max(zone[3], zone[6])
+
+    return x >= minX and x <= maxX
+        and y >= minY and y <= maxY
+        and z >= minZ and z <= maxZ
+end
+
+local function sendRadarDoorRequest(doorID, username, position, timestamp)
+    local message = {
+        type = "radar_open",
+        username = username,
+
+        position = {
+            x = position.x,
+            y = position.y,
+            z = position.z
+        },
+
+        timestamp = timestamp
+    }
+
+    local sent = rednet.send(
+        doorID,
+        message,
+        DOOR_PROTOCOL
+    )
+
+    if sent then
+        logMessage(
+            "RADAR DOOR REQUEST - "
+            .. username
+            .. " -> Door Computer "
+            .. doorID
+            .. " @ "
+            .. string.format(
+                "%.2f, %.2f, %.2f",
+                position.x,
+                position.y,
+                position.z
+            )
+        )
+    else
+        logMessage(
+            "RADAR DOOR REQUEST FAILED - "
+            .. username
+            .. " -> Door Computer "
+            .. doorID
+        )
+    end
+end
+
+local function handleRadarData(sender, message)
+    -- Only accept radar data from the configured radar computer.
+    if sender ~= RADAR_ID then
+        logMessage(
+            "RADAR DATA REJECTED - Computer "
+            .. tostring(sender)
+            .. " is not the configured radar computer"
+        )
+        return
+    end
+
+    if type(message) ~= "table"
+        or type(message.data) ~= "table" then
+        logMessage("RADAR DATA REJECTED - Invalid packet")
+        return
+    end
+
+    local timestamp = message.timestamp
+        or os.epoch("utc")
+
+    -- Keep track of which players were present in this radar update.
+    local presentPlayers = {}
+
+    for username, position in pairs(message.data) do
+        if type(username) == "string"
+            and type(position) == "table"
+            and type(position.x) == "number"
+            and type(position.y) == "number"
+            and type(position.z) == "number" then
+
+            presentPlayers[username] = true
+
+            if type(radarDoorStates[username]) ~= "table" then
+                radarDoorStates[username] = {}
+            end
+
+            for doorID, zone in pairs(doors) do
+                local inside = isInsideDoorZone(
+                    position.x,
+                    position.y,
+                    position.z,
+                    zone
+                )
+
+                local wasInside =
+                    radarDoorStates[username][doorID] == true
+
+                if inside and not wasInside then
+                    -- Player has just entered this door's zone.
+                    sendRadarDoorRequest(
+                        doorID,
+                        username,
+                        position,
+                        timestamp
+                    )
+                end
+
+                radarDoorStates[username][doorID] = inside
+            end
+        end
+    end
+
+    -- Players no longer reported by the radar are considered
+    -- outside all door zones. This allows a new request when
+    -- they are detected again and enter a zone.
+    for username, states in pairs(radarDoorStates) do
+        if not presentPlayers[username] then
+            for doorID in pairs(states) do
+                states[doorID] = false
+            end
+        end
+    end
+end
+
+--------------------------------------------------
 -- Authentication listener
 --------------------------------------------------
 
@@ -809,8 +978,12 @@ local function authenticationListener()
         elseif event == "rednet_message" then
             if protocol == "door_auth" then
                 handleDoorAuth(sender, message)
+
             elseif protocol == "admin_auth" then
                 handleAdminAuth(sender, message)
+
+            elseif protocol == RADAR_PROTOCOL then
+                handleRadarData(sender, message)
             end
         end
     end
