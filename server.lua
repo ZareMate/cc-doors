@@ -24,7 +24,7 @@ local SERVER_ID = os.getComputerID()
 --------------------------------------------------
 
 -- Computer ID of the radar computer.
-local RADAR_ID = 214
+local RADAR_ID = 194
 
 -- Protocol used by the radar computer.
 local RADAR_PROTOCOL = "radar"
