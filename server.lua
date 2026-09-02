@@ -1,4 +1,4 @@
-local VERSION = "v3.4"
+local VERSION = "v3.5"
 
 local USERS_FILE = "/disk/users"
 local USER_STATES_FILE = "/disk/user_states"
@@ -52,6 +52,7 @@ local ELEVATOR_FLOORS = {
 }
 local ELEVATOR_RELAY_SIDE = "front"
 local ELEVATOR_PULSE_TIME = 0.5
+local ELEVATOR_PROTOCOL = "elevator_control"
 
 
 -- Door detection zones.
@@ -573,9 +574,30 @@ local function elevatorRelayForFloor(floor)
         or nil
 end
 
-local function callElevator(floor)
+local function activateElevatorFloor(floor)
     local relayName = elevatorRelayForFloor(floor.id)
 
+    if not relayName then
+        logMessage("ELEVATOR FAILED - relay redstone_relay_" .. tostring(floor.id) .. " not found")
+        return false, "Relay not found"
+    end
+
+    local relay = peripheral.wrap(relayName)
+
+    if not relay or type(relay.setOutput) ~= "function" then
+        logMessage("ELEVATOR FAILED - invalid relay " .. relayName)
+        return false, "Invalid relay"
+    end
+
+    relay.setOutput(ELEVATOR_RELAY_SIDE, true)
+    sleep(ELEVATOR_PULSE_TIME)
+    relay.setOutput(ELEVATOR_RELAY_SIDE, false)
+
+    logMessage("ELEVATOR - " .. floor.name .. " (" .. tostring(floor.id) .. ") via " .. relayName .. " side=" .. ELEVATOR_RELAY_SIDE)
+    return true
+end
+
+local function callElevator(floor)
     clear()
     print("================================")
     print("         Elevator")
@@ -585,29 +607,61 @@ local function callElevator(floor)
     print("Relay: redstone_relay_" .. tostring(floor.id))
     print("")
 
-    if not relayName then
-        print("Relay not found!")
-        logMessage("ELEVATOR FAILED - relay redstone_relay_" .. tostring(floor.id) .. " not found")
+    local ok, err = activateElevatorFloor(floor)
+
+    if not ok then
+        print(err .. "!")
         sleep(2)
         return
     end
-
-    local relay = peripheral.wrap(relayName)
-
-    if not relay or type(relay.setOutput) ~= "function" then
-        print("Invalid relay!")
-        logMessage("ELEVATOR FAILED - invalid relay " .. relayName)
-        sleep(2)
-        return
-    end
-
-    relay.setOutput(ELEVATOR_RELAY_SIDE, true)
-    sleep(ELEVATOR_PULSE_TIME)
-    relay.setOutput(ELEVATOR_RELAY_SIDE, false)
 
     print("Command sent.")
-    logMessage("ELEVATOR - " .. floor.name .. " (" .. tostring(floor.id) .. ") via " .. relayName .. " side=" .. ELEVATOR_RELAY_SIDE)
     sleep(2)
+end
+
+local function getElevatorFloorById(floorId)
+    for _, floor in ipairs(ELEVATOR_FLOORS) do
+        if tonumber(floor.id) == tonumber(floorId) then
+            return floor
+        end
+    end
+
+    return nil
+end
+
+local function handleRemoteElevator(sender, message)
+    -- Only monitor computer 296 may request remote elevator control.
+    if sender ~= MONITOR_ID then
+        logMessage("ELEVATOR REMOTE REJECTED - Computer " .. tostring(sender))
+        return
+    end
+
+    if type(message) ~= "table"
+        or message.type ~= "call"
+        then
+        return
+    end
+
+    local floor = getElevatorFloorById(message.floor)
+
+    if not floor then
+        rednet.send(sender, {
+            type = "response",
+            success = false,
+            error = "invalid_floor"
+        }, ELEVATOR_PROTOCOL)
+        return
+    end
+
+    local ok, err = activateElevatorFloor(floor)
+
+    rednet.send(sender, {
+        type = "response",
+        success = ok,
+        floor = floor.name,
+        floor_id = floor.id,
+        error = ok and nil or err
+    }, ELEVATOR_PROTOCOL)
 end
 
 local function elevatorMenu()
@@ -1184,6 +1238,9 @@ local function authenticationListener()
 
             elseif protocol == RADAR_PROTOCOL then
                 handleRadarData(sender, message)
+
+            elseif protocol == ELEVATOR_PROTOCOL then
+                handleRemoteElevator(sender, message)
             end
         end
     end
