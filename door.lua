@@ -776,6 +776,35 @@ local function diskAccessListener()
 end
 
 --------------------------------------------------
+-- Radar door listener
+--------------------------------------------------
+
+local function radarDoorListener()
+    while not exit do
+        local event, p1, p2, p3 = os.pullEventRaw()
+
+        if event == "terminate" then
+            -- Ignore Ctrl+T
+
+        elseif event == "rednet_message" then
+            local sender = p1
+            local message = p2
+            local protocol = p3
+
+            if sender == SERVER_ID
+                and protocol == "door_control"
+                and type(message) == "table"
+                and message.type == "radar_open" then
+
+                -- The door server has already verified that the
+                -- player is active/admin and is inside this door's zone.
+                openDoor(OPEN_TIME_PASSWORD)
+            end
+        end
+    end
+end
+
+--------------------------------------------------
 -- Main screen
 --------------------------------------------------
 
@@ -849,5 +878,6 @@ end
 parallel.waitForAny(
     mainLoop,
     updateListener,
-    diskAccessListener
+    diskAccessListener,
+    radarDoorListener
 )
